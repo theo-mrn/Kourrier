@@ -3,6 +3,7 @@ module github.com/theo-mrn/kourrier
 go 1.26.2
 
 require (
+	github.com/alicebob/miniredis/v2 v2.39.0
 	github.com/aws/aws-sdk-go-v2 v1.47.1
 	github.com/aws/aws-sdk-go-v2/config v1.33.6
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.6
@@ -10,6 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sesv2 v1.77.0
 	github.com/aws/smithy-go v1.28.2
 	github.com/prometheus/client_golang v1.24.1
+	github.com/redis/go-redis/v9 v9.22.0
 	github.com/wneessen/go-mail v0.8.1
 )
 
@@ -33,6 +35,8 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
