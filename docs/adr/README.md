@@ -10,3 +10,4 @@ Projet : microservice d'e-mailing asynchrone, cloud-native et agnostique.
 | [004](0004-abstraction-fournisseur.md) | Moteur d'envoi et abstraction du fournisseur | Accepté |
 | [005](0005-observabilite-native.md) | Observabilité native (Prometheus, Loki, Grafana) | Accepté |
 | [006](0006-fiabilite-redis-streams.md) | Fiabilité de la file : Redis Streams, retries et DLQ | Accepté |
+| [007](0007-idempotence.md) | Idempotence des envois | Accepté |
