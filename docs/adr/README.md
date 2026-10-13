@@ -11,3 +11,4 @@ Projet : microservice d'e-mailing asynchrone, cloud-native et agnostique.
 | [005](0005-observabilite-native.md) | Observabilité native (Prometheus, Loki, Grafana) | Accepté |
 | [006](0006-fiabilite-redis-streams.md) | Fiabilité de la file : Redis Streams, retries et DLQ | Accepté |
 | [007](0007-idempotence.md) | Idempotence des envois | Accepté |
+| [008](0008-authentification-multi-tenant.md) | Authentification et isolation multi-tenant | Accepté |
