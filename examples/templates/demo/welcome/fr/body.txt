@@ -1,0 +1,6 @@
+Bonjour {{.name}},
+
+Votre compte a bien été créé. Vous pouvez dès maintenant vous connecter :
+{{.login_url}}
+
+Si vous n'êtes pas à l'origine de cette inscription, ignorez simplement cet e-mail.

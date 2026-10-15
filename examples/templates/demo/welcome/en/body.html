@@ -1,0 +1,10 @@
+{{template "layout" .}}
+{{define "title"}}Welcome{{end}}
+{{define "content"}}
+<h1 style="font-size:22px;margin:0 0 16px;">Hi {{.name}} 👋</h1>
+<p>Your account is ready. You can sign in right away:</p>
+<p style="margin:24px 0;">
+  <a href="{{.login_url}}" style="background:#3b5bdb;color:#ffffff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block;">Sign in</a>
+</p>
+<p style="color:#52606d;font-size:14px;">If you didn't sign up, you can safely ignore this e-mail.</p>
+{{end}}

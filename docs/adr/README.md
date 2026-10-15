@@ -13,3 +13,4 @@ Projet : microservice d'e-mailing asynchrone, cloud-native et agnostique.
 | [007](0007-idempotence.md) | Idempotence des envois | Accepté |
 | [008](0008-authentification-multi-tenant.md) | Authentification et isolation multi-tenant | Accepté |
 | [009](0009-rate-limiting-distribue.md) | Rate limiting distribué | Accepté |
+| [010](0010-format-des-templates.md) | Format, localisation et cache des templates | Accepté |

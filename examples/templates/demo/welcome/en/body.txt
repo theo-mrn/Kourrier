@@ -1,0 +1,6 @@
+Hi {{.name}},
+
+Your account is ready. You can sign in right away:
+{{.login_url}}
+
+If you didn't sign up, you can safely ignore this e-mail.

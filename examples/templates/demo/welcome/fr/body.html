@@ -1,0 +1,11 @@
+{{template "layout" .}}
+{{define "lang"}}fr{{end}}
+{{define "title"}}Bienvenue{{end}}
+{{define "content"}}
+<h1 style="font-size:22px;margin:0 0 16px;">Bonjour {{.name}} 👋</h1>
+<p>Votre compte a bien été créé. Vous pouvez dès maintenant vous connecter :</p>
+<p style="margin:24px 0;">
+  <a href="{{.login_url}}" style="background:#3b5bdb;color:#ffffff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block;">Se connecter</a>
+</p>
+<p style="color:#52606d;font-size:14px;">Si vous n'êtes pas à l'origine de cette inscription, ignorez simplement cet e-mail.</p>
+{{end}}
