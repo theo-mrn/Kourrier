@@ -1,0 +1,13 @@
+# Local development tenants. NEVER use this file in production.
+#
+# The API key for the "demo" tenant is: kr_dev_local_insecure_key
+# Generate real keys with `kourrier keygen`.
+tenants:
+  - id: demo
+    api_keys:
+      - sha256: abc72e3414170f76323af144375ac7509f30f7d0bd98e8d6b9bdc5e4104d1115
+    default_sender:
+      email: no-reply@demo.kourrier.dev
+      name: Kourrier Demo
+    allowed_senders:
+      - "*@demo.kourrier.dev"
