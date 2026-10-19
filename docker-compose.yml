@@ -1,0 +1,97 @@
+# Local development stack:
+#   - Kourrier      API on http://localhost:8080, metrics on http://localhost:9090/metrics
+#   - Redis         queue, idempotency keys, statuses, rate limiter
+#   - RustFS        S3-compatible template storage (console on http://localhost:9001)
+#   - Mailpit       SMTP catcher, read the e-mails on http://localhost:8025
+#
+#   docker compose up --build
+#   make send   # sends the demo "welcome" e-mail
+#
+# Host ports are bound to 127.0.0.1 and can be overridden through environment
+# variables (e.g. MAILPIT_PORT=8026 docker compose up) to avoid conflicts.
+name: kourrier
+
+x-s3-credentials: &s3-credentials
+  AWS_ACCESS_KEY_ID: kourrier
+  AWS_SECRET_ACCESS_KEY: kourrier-dev-secret
+  AWS_DEFAULT_REGION: us-east-1
+
+services:
+  kourrier:
+    build: .
+    depends_on:
+      redis: { condition: service_healthy }
+      s3-init: { condition: service_completed_successfully }
+      mailpit: { condition: service_started }
+    ports:
+      - "127.0.0.1:${KOURRIER_PORT:-8080}:8080"
+      - "127.0.0.1:${KOURRIER_ADMIN_PORT:-9090}:9090"
+    environment:
+      KOURRIER_LOG_FORMAT: text
+      KOURRIER_LOG_LEVEL: debug
+      KOURRIER_TENANTS_FILE: /etc/kourrier/tenants.yaml
+      KOURRIER_REDIS_ADDR: redis:6379
+      KOURRIER_STORAGE_PROVIDER: s3
+      KOURRIER_STORAGE_S3_ENDPOINT: http://s3:9000
+      KOURRIER_STORAGE_S3_BUCKET: kourrier-templates
+      KOURRIER_STORAGE_S3_USE_PATH_STYLE: "true"
+      KOURRIER_STORAGE_S3_ACCESS_KEY_ID: kourrier
+      KOURRIER_STORAGE_S3_SECRET_ACCESS_KEY: kourrier-dev-secret
+      KOURRIER_TEMPLATES_CACHE_TTL: 5s
+      KOURRIER_TEMPLATES_DEFAULT_LOCALE: en
+      KOURRIER_MAILER_PROVIDER: smtp
+      KOURRIER_MAILER_SMTP_HOST: mailpit
+      KOURRIER_MAILER_SMTP_PORT: "1025"
+      KOURRIER_MAILER_SMTP_TLS: none
+    volumes:
+      - ./dev/tenants.yaml:/etc/kourrier/tenants.yaml:ro
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  s3:
+    image: rustfs/rustfs:latest
+    command: ["/data"]
+    environment:
+      RUSTFS_ACCESS_KEY: kourrier
+      RUSTFS_SECRET_KEY: kourrier-dev-secret
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - "127.0.0.1:${S3_PORT:-9000}:9000"
+      - "127.0.0.1:${S3_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - s3-data:/data
+
+  # Creates the bucket and uploads the example templates. Re-run it after
+  # editing templates: docker compose run --rm s3-init
+  s3-init:
+    image: amazon/aws-cli:latest
+    depends_on: [s3]
+    environment: *s3-credentials
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until aws --endpoint-url http://s3:9000 s3 ls >/dev/null 2>&1; do echo "waiting for s3..."; sleep 1; done
+        aws --endpoint-url http://s3:9000 s3 mb s3://kourrier-templates 2>/dev/null || true
+        aws --endpoint-url http://s3:9000 s3 sync --delete /templates s3://kourrier-templates/
+    volumes:
+      - ./examples/templates:/templates:ro
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
+
+volumes:
+  redis-data:
+  s3-data:
