@@ -1,0 +1,48 @@
+{{- if not (has .Values.mode (list "all" "api" "worker")) }}
+{{- fail "mode must be one of all, api, worker" }}
+{{- end }}
+{{- if not (has .Values.mailer.provider (list "aws-ses" "smtp" "console" "filesystem")) }}
+{{- fail "mailer.provider must be one of aws-ses, smtp, console, filesystem" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kourrier.fullname" . }}
+  labels:
+    {{- include "kourrier.labels" . | nindent 4 }}
+data:
+  KOURRIER_MODE: {{ .Values.mode | quote }}
+  KOURRIER_HTTP_ADDR: ":8080"
+  KOURRIER_ADMIN_ADDR: ":9090"
+  KOURRIER_LOG_LEVEL: {{ .Values.log.level | quote }}
+  KOURRIER_LOG_FORMAT: {{ .Values.log.format | quote }}
+  KOURRIER_TENANTS_FILE: /etc/kourrier/tenants.yaml
+  KOURRIER_REDIS_ADDR: {{ .Values.redis.addr | quote }}
+  KOURRIER_REDIS_USERNAME: {{ .Values.redis.username | quote }}
+  KOURRIER_REDIS_DB: {{ .Values.redis.db | quote }}
+  KOURRIER_REDIS_TLS: {{ .Values.redis.tls | quote }}
+  KOURRIER_REDIS_KEY_PREFIX: {{ .Values.redis.keyPrefix | quote }}
+  KOURRIER_WORKER_CONCURRENCY: {{ .Values.worker.concurrency | quote }}
+  KOURRIER_WORKER_MAX_ATTEMPTS: {{ .Values.worker.maxAttempts | quote }}
+  KOURRIER_WORKER_SEND_TIMEOUT: {{ .Values.worker.sendTimeout | quote }}
+  KOURRIER_WORKER_BACKOFF_BASE: {{ .Values.worker.backoffBase | quote }}
+  KOURRIER_WORKER_BACKOFF_MAX: {{ .Values.worker.backoffMax | quote }}
+  KOURRIER_RATE_LIMIT_PER_SECOND: {{ .Values.rateLimit.perSecond | quote }}
+  KOURRIER_RATE_LIMIT_BURST: {{ .Values.rateLimit.burst | quote }}
+  KOURRIER_RATE_LIMIT_SCOPE: {{ .Values.rateLimit.scope | quote }}
+  KOURRIER_TEMPLATES_CACHE_TTL: {{ .Values.templates.cacheTTL | quote }}
+  KOURRIER_TEMPLATES_DEFAULT_LOCALE: {{ .Values.templates.defaultLocale | quote }}
+  KOURRIER_STORAGE_PROVIDER: {{ .Values.storage.provider | quote }}
+  KOURRIER_STORAGE_S3_BUCKET: {{ .Values.storage.s3.bucket | quote }}
+  KOURRIER_STORAGE_S3_PREFIX: {{ .Values.storage.s3.prefix | quote }}
+  KOURRIER_STORAGE_S3_REGION: {{ .Values.storage.s3.region | quote }}
+  KOURRIER_STORAGE_S3_ENDPOINT: {{ .Values.storage.s3.endpoint | quote }}
+  KOURRIER_STORAGE_S3_USE_PATH_STYLE: {{ .Values.storage.s3.usePathStyle | quote }}
+  KOURRIER_MAILER_PROVIDER: {{ .Values.mailer.provider | quote }}
+  KOURRIER_MAILER_SES_REGION: {{ .Values.mailer.ses.region | quote }}
+  KOURRIER_MAILER_SES_CONFIGURATION_SET: {{ .Values.mailer.ses.configurationSet | quote }}
+  KOURRIER_MAILER_SMTP_HOST: {{ .Values.mailer.smtp.host | quote }}
+  KOURRIER_MAILER_SMTP_PORT: {{ .Values.mailer.smtp.port | quote }}
+  KOURRIER_MAILER_SMTP_TLS: {{ .Values.mailer.smtp.tls | quote }}
+  KOURRIER_MAILER_SMTP_USERNAME: {{ .Values.mailer.smtp.username | quote }}
+  KOURRIER_MAILER_FILESYSTEM_DIR: /tmp/emails

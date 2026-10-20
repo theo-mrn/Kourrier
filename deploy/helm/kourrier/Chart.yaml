@@ -1,0 +1,17 @@
+apiVersion: v2
+name: kourrier
+description: Asynchronous, cloud-native and provider-agnostic e-mailing microservice.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/theo-mrn/kourrier
+sources:
+  - https://github.com/theo-mrn/kourrier
+keywords:
+  - email
+  - ses
+  - smtp
+  - queue
+maintainers:
+  - name: theo-mrn

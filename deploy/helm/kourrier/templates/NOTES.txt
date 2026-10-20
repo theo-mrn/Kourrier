@@ -1,0 +1,21 @@
+Kourrier {{ .Chart.AppVersion }} is deployed in mode "{{ .Values.mode }}" with the "{{ .Values.mailer.provider }}" mailer.
+{{- if eq .Values.mailer.provider "console" "filesystem" }}
+
+WARNING: the {{ .Values.mailer.provider }} mailer does not send real e-mails.
+         Set mailer.provider=aws-ses (or smtp) for production.
+{{- end }}
+{{- if include "kourrier.runsAPI" . }}
+
+Send an e-mail from inside the cluster:
+
+  curl -X POST http://{{ include "kourrier.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/v1/emails \
+    -H "Authorization: Bearer <api key>" \
+    -H "Content-Type: application/json" \
+    -H "Idempotency-Key: <unique id>" \
+    -d '{"to":[{"email":"jane@example.com"}],"template":{"name":"welcome","locale":"fr","data":{"name":"Jane"}}}'
+{{- end }}
+
+Metrics: http://{{ include "kourrier.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.adminPort }}/metrics
+{{- if .Values.grafanaDashboard.enabled }}
+Grafana dashboard: ConfigMap {{ include "kourrier.fullname" . }}-dashboard (label grafana_dashboard).
+{{- end }}
