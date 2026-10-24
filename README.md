@@ -20,23 +20,38 @@ POST /v1/emails ──► API ──► Redis Streams ──► Workers ──�
 - **Observabilité native** : métriques Prometheus, logs JSON (adresses masquées), dashboard Grafana et alertes livrés dans le Chart Helm.
 - **Léger** : un binaire, environ 11 Mio de RAM, image distroless non-root d'environ 44 Mo.
 
-## Démarrage rapide
+## Tester en local
+
+Aucun compte AWS, aucune connexion Internet : en local, Kourrier **affiche les e-mails dans la console** au lieu de les envoyer (driver `console`, [ADR 004](docs/adr/0004-abstraction-fournisseur.md)).
 
 ```sh
-make up      # Redis, RustFS (S3), Mailpit et Kourrier via Docker Compose
-make send    # envoie l'e-mail de démonstration "welcome"
+make up      # Redis + Kourrier dans Docker (API sur http://localhost:8180)
+make send    # envoie l'e-mail de démonstration « welcome »
+make logs    # affiche l'e-mail rendu (texte et HTML)
+make down    # arrête tout
 ```
 
-Ouvrez ensuite Mailpit sur <http://localhost:8025> pour voir l'e-mail.
+Ou bien, pour travailler sur le code Go :
 
-Les ports hôtes sont surchargeables en cas de conflit, par exemple `REDIS_PORT=6380 MAILPIT_PORT=8026 make up`.
+```sh
+make run     # lance Kourrier depuis les sources, avec son propre Redis ; les e-mails
+             # s'affichent dans ce terminal
+make send    # depuis un autre terminal
+```
 
-Sans Docker, avec un Redis local, `make run` sert les templates de `examples/templates` et affiche les e-mails dans le terminal.
+Les templates sont relus à chaque envoi depuis `examples/templates/` : modifiez un fichier, refaites `make send`, le résultat s'affiche aussitôt.
+
+| Mode | Templates | Livraison | Pour quoi |
+|------|-----------|-----------|-----------|
+| `make up` / `make run` | dossier local | console | développer, mettre en forme les templates |
+| `make up-full` | S3 (RustFS) | SMTP vers Mailpit, <http://localhost:8125> | tester les drivers de production |
+
+Les ports par défaut (8180, 9190, 6390, 8125, 9200) évitent les ports usuels : le stack tourne à côté d'autres projets. Ils restent surchargeables, par exemple `KOURRIER_PORT=8181 make up`.
 
 ## Envoyer un e-mail
 
 ```sh
-curl -X POST http://localhost:8080/v1/emails \
+curl -X POST http://localhost:8180/v1/emails \
   -H "Authorization: Bearer kr_dev_local_insecure_key" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: 6f1c2a7e-signup-42" \
@@ -50,7 +65,7 @@ curl -X POST http://localhost:8080/v1/emails \
       }'
 # {"id":"0192f1b4-…","status":"queued"}
 
-curl -H "Authorization: Bearer kr_dev_local_insecure_key" http://localhost:8080/v1/emails/0192f1b4-…
+curl -H "Authorization: Bearer kr_dev_local_insecure_key" http://localhost:8180/v1/emails/0192f1b4-…
 # {"id":"0192f1b4-…","status":"sent","attempts":1,…}
 ```
 
