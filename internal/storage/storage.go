@@ -6,6 +6,8 @@ package storage
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"sync"
 )
 
@@ -15,9 +17,15 @@ var ErrNotFound = errors.New("storage: object not found")
 // MaxObjectSize bounds the size of a template file read from storage.
 const MaxObjectSize = 1 << 20
 
+// MaxListedKeys bounds the number of keys returned by List.
+const MaxListedKeys = 10_000
+
 // Provider reads objects by key. Keys use "/" as separator.
 type Provider interface {
 	Get(ctx context.Context, key string) ([]byte, error)
+	// List returns the keys of every object under prefix ("tenant/"), sorted.
+	// An empty or missing prefix is not an error.
+	List(ctx context.Context, prefix string) ([]string, error)
 	// Ping checks that the storage is reachable.
 	Ping(ctx context.Context) error
 }
@@ -52,6 +60,19 @@ func (m *Memory) Get(_ context.Context, key string) ([]byte, error) {
 		return nil, ErrNotFound
 	}
 	return append([]byte(nil), v...), nil
+}
+
+func (m *Memory) List(_ context.Context, prefix string) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var keys []string
+	for k := range m.objects {
+		if strings.HasPrefix(k, prefix) {
+			keys = append(keys, k)
+		}
+	}
+	slices.Sort(keys)
+	return keys, nil
 }
 
 func (m *Memory) Ping(context.Context) error { return nil }

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -88,6 +89,31 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("s3store: %q exceeds %d bytes", fullKey, storage.MaxObjectSize)
 	}
 	return data, nil
+}
+
+func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
+	base := ""
+	if s.prefix != "" {
+		base = strings.TrimSuffix(s.prefix, "/") + "/"
+	}
+	var keys []string
+	pages := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(base + prefix),
+	})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("s3store: list %q: %w", base+prefix, err)
+		}
+		for _, obj := range page.Contents {
+			keys = append(keys, strings.TrimPrefix(aws.ToString(obj.Key), base))
+		}
+		if len(keys) > storage.MaxListedKeys {
+			return nil, fmt.Errorf("s3store: more than %d objects under %q", storage.MaxListedKeys, base+prefix)
+		}
+	}
+	return keys, nil
 }
 
 func (s *Store) Ping(ctx context.Context) error {

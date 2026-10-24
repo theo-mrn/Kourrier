@@ -20,6 +20,7 @@ import (
 	"fmt"
 	htmltemplate "html/template"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	texttemplate "text/template"
@@ -33,9 +34,14 @@ import (
 	"github.com/theo-mrn/kourrier/internal/storage"
 )
 
-// ErrNotFound is returned (wrapped in a permanent error) when no locale of the
-// requested template exists.
-var ErrNotFound = errors.New("template not found")
+// Errors returned by the Renderer, always wrapped in a permanent error: a
+// retry cannot fix them.
+var (
+	// ErrNotFound: no locale of the requested template exists.
+	ErrNotFound = errors.New("template not found")
+	// ErrInvalid: the template exists but cannot be parsed or executed.
+	ErrInvalid = errors.New("invalid template")
+)
 
 const (
 	fileSubject = "subject.txt"
@@ -129,30 +135,74 @@ func (r *Renderer) render(ctx context.Context, tenant string, ref mail.TemplateR
 
 	var buf bytes.Buffer
 	if err := tpl.subject.Execute(&buf, data); err != nil {
-		return nil, retry.Permanent(fmt.Errorf("render subject: %w", err))
+		return nil, retry.Permanent(fmt.Errorf("%w: render subject: %w", ErrInvalid, err))
 	}
 	// A subject is a single header line: fold any line break coming from the
 	// data to prevent header injection.
 	out.Subject = strings.Join(strings.Fields(buf.String()), " ")
 	if out.Subject == "" {
-		return nil, retry.Permanent(errors.New("rendered subject is empty"))
+		return nil, retry.Permanent(fmt.Errorf("%w: rendered subject is empty", ErrInvalid))
 	}
 
 	if tpl.html != nil {
 		buf.Reset()
 		if err := tpl.html.Execute(&buf, data); err != nil {
-			return nil, retry.Permanent(fmt.Errorf("render %s: %w", fileHTML, err))
+			return nil, retry.Permanent(fmt.Errorf("%w: render %s: %w", ErrInvalid, fileHTML, err))
 		}
 		out.HTML = buf.String()
 	}
 	if tpl.text != nil {
 		buf.Reset()
 		if err := tpl.text.Execute(&buf, data); err != nil {
-			return nil, retry.Permanent(fmt.Errorf("render %s: %w", fileText, err))
+			return nil, retry.Permanent(fmt.Errorf("%w: render %s: %w", ErrInvalid, fileText, err))
 		}
 		out.Text = buf.String()
 	}
 	return out, nil
+}
+
+// Check verifies that the template exists, for locale or the default locale,
+// and compiles. The error wraps ErrNotFound or ErrInvalid (both permanent), or
+// is transient when the storage cannot be read.
+func (r *Renderer) Check(ctx context.Context, tenant, name, locale string) error {
+	if !mail.NamePattern.MatchString(tenant) || !mail.NamePattern.MatchString(name) {
+		return retry.Permanent(fmt.Errorf("%w: %s/%s", ErrNotFound, tenant, name))
+	}
+	_, err := r.load(ctx, tenant, name, locale)
+	return err
+}
+
+// Info describes a template available to a tenant.
+type Info struct {
+	Name    string   `json:"name"`
+	Locales []string `json:"locales"`
+}
+
+// List returns the templates of tenant, sorted by name. A locale is listed
+// when its subject.txt exists; it is not compiled (see Check).
+func (r *Renderer) List(ctx context.Context, tenant string) ([]Info, error) {
+	if !mail.NamePattern.MatchString(tenant) {
+		return nil, fmt.Errorf("invalid tenant %q", tenant)
+	}
+	keys, err := r.store.List(ctx, tenant+"/")
+	if err != nil {
+		return nil, fmt.Errorf("list templates of %s: %w", tenant, err)
+	}
+	locales := make(map[string][]string)
+	for _, key := range keys {
+		// <tenant>/<template>/<locale>/subject.txt
+		parts := strings.Split(strings.TrimPrefix(key, tenant+"/"), "/")
+		if len(parts) == 3 && parts[2] == fileSubject && mail.NamePattern.MatchString(parts[0]) {
+			locales[parts[0]] = append(locales[parts[0]], parts[1])
+		}
+	}
+	infos := make([]Info, 0, len(locales))
+	for name, locs := range locales {
+		slices.Sort(locs)
+		infos = append(infos, Info{Name: name, Locales: locs})
+	}
+	slices.SortFunc(infos, func(a, b Info) int { return strings.Compare(a.Name, b.Name) })
+	return infos, nil
 }
 
 // Invalidate drops every cached template.
@@ -220,7 +270,7 @@ func (r *Renderer) compile(ctx context.Context, tenant, dir, locale string, subj
 	c := &compiled{locale: locale}
 	var err error
 	if c.subject, err = texttemplate.New(fileSubject).Funcs(funcs()).Parse(string(subject)); err != nil {
-		return nil, retry.Permanent(fmt.Errorf("parse %s/%s: %w", dir, fileSubject, err))
+		return nil, retry.Permanent(fmt.Errorf("%w: parse %s/%s: %w", ErrInvalid, dir, fileSubject, err))
 	}
 
 	htmlBody, err := r.getOptional(ctx, path.Join(dir, fileHTML))
@@ -232,7 +282,7 @@ func (r *Renderer) compile(ctx context.Context, tenant, dir, locale string, subj
 		return nil, err
 	}
 	if htmlBody == nil && textBody == nil {
-		return nil, retry.Permanent(fmt.Errorf("%s: neither %s nor %s exists", dir, fileHTML, fileText))
+		return nil, retry.Permanent(fmt.Errorf("%w: %s: neither %s nor %s exists", ErrInvalid, dir, fileHTML, fileText))
 	}
 
 	if htmlBody != nil {
@@ -243,16 +293,16 @@ func (r *Renderer) compile(ctx context.Context, tenant, dir, locale string, subj
 		}
 		if layout != nil {
 			if _, err := c.html.New("layout").Parse(string(layout)); err != nil {
-				return nil, retry.Permanent(fmt.Errorf("parse %s/%s: %w", tenant, fileLayout, err))
+				return nil, retry.Permanent(fmt.Errorf("%w: parse %s/%s: %w", ErrInvalid, tenant, fileLayout, err))
 			}
 		}
 		if _, err := c.html.Parse(string(htmlBody)); err != nil {
-			return nil, retry.Permanent(fmt.Errorf("parse %s/%s: %w", dir, fileHTML, err))
+			return nil, retry.Permanent(fmt.Errorf("%w: parse %s/%s: %w", ErrInvalid, dir, fileHTML, err))
 		}
 	}
 	if textBody != nil {
 		if c.text, err = texttemplate.New(fileText).Funcs(funcs()).Parse(string(textBody)); err != nil {
-			return nil, retry.Permanent(fmt.Errorf("parse %s/%s: %w", dir, fileText, err))
+			return nil, retry.Permanent(fmt.Errorf("%w: parse %s/%s: %w", ErrInvalid, dir, fileText, err))
 		}
 	}
 	return c, nil

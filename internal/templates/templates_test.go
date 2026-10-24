@@ -3,6 +3,7 @@ package templates
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -130,4 +131,60 @@ type failingStore struct{}
 func (failingStore) Get(context.Context, string) ([]byte, error) {
 	return nil, errors.New("connection refused")
 }
+func (failingStore) List(context.Context, string) ([]string, error) {
+	return nil, errors.New("connection refused")
+}
 func (failingStore) Ping(context.Context) error { return nil }
+
+func TestCheck(t *testing.T) {
+	r := NewRenderer(newStore(), Options{CacheTTL: time.Minute, DefaultLocale: "en"})
+	ctx := context.Background()
+
+	for _, locale := range []string{"fr", "en", "de", ""} {
+		if err := r.Check(ctx, "yner", "welcome", locale); err != nil {
+			t.Errorf("Check(welcome, %q) = %v, want nil (locale or default locale exists)", locale, err)
+		}
+	}
+	for name, want := range map[string]error{
+		"missing":  ErrNotFound,
+		"../other": ErrNotFound,
+		"broken":   ErrInvalid,
+		"no-body":  ErrInvalid,
+	} {
+		err := r.Check(ctx, "yner", name, "en")
+		if !errors.Is(err, want) || !retry.IsPermanent(err) {
+			t.Errorf("Check(%q) = %v, want permanent %v", name, err, want)
+		}
+	}
+	if err := r.Check(ctx, "yner", "welcome", "fr"); err != nil || errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	if err := NewRenderer(failingStore{}, Options{}).Check(ctx, "yner", "welcome", "fr"); err == nil || retry.IsPermanent(err) {
+		t.Errorf("storage outage must be a transient error, got %v", err)
+	}
+}
+
+func TestList(t *testing.T) {
+	r := NewRenderer(newStore(), Options{DefaultLocale: "en"})
+	infos, err := r.List(context.Background(), "yner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Info{
+		{Name: "broken", Locales: []string{"en"}},
+		{Name: "no-body", Locales: []string{"en"}},
+		{Name: "welcome", Locales: []string{"en", "fr"}},
+	}
+	if !reflect.DeepEqual(infos, want) {
+		t.Fatalf("List = %+v, want %+v", infos, want)
+	}
+	if infos, _ := r.List(context.Background(), "nobody"); len(infos) != 0 {
+		t.Errorf("unknown tenant should have no template, got %+v", infos)
+	}
+	if _, err := r.List(context.Background(), "../x"); err == nil {
+		t.Error("invalid tenant must be rejected")
+	}
+	if _, err := NewRenderer(failingStore{}, Options{}).List(context.Background(), "yner"); err == nil {
+		t.Error("storage errors must be returned")
+	}
+}

@@ -9,6 +9,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
+	"strings"
 
 	"github.com/theo-mrn/kourrier/internal/storage"
 )
@@ -45,6 +47,36 @@ func (s *Store) Get(_ context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("fsstore: %q exceeds %d bytes", key, storage.MaxObjectSize)
 	}
 	return data, nil
+}
+
+func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
+	dir := strings.TrimSuffix(prefix, "/")
+	if dir == "" {
+		dir = "."
+	}
+	var keys []string
+	err := fs.WalkDir(s.root.FS(), dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !d.IsDir() && strings.HasPrefix(p, prefix) {
+			keys = append(keys, path.Clean(p))
+			if len(keys) > storage.MaxListedKeys {
+				return fmt.Errorf("fsstore: more than %d objects under %q", storage.MaxListedKeys, prefix)
+			}
+		}
+		return nil
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("fsstore: list %q: %w", prefix, err)
+	}
+	return keys, nil
 }
 
 func (s *Store) Ping(context.Context) error {
