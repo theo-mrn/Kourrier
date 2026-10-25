@@ -39,7 +39,7 @@ make run     # lance Kourrier depuis les sources, avec son propre Redis ; les e-
 make send    # depuis un autre terminal
 ```
 
-Les templates sont relus à chaque envoi depuis `examples/templates/` : modifiez un fichier, refaites `make send`, le résultat s'affiche aussitôt.
+Les templates sont relus à chaque envoi depuis `examples/templates/` : modifiez un fichier, refaites `make send`, le résultat s'affiche aussitôt. Pour la mise en page, `make preview` rend le template sans l'envoyer et l'ouvre dans le navigateur (`make preview TEMPLATE=welcome LOCALE=en`).
 
 | Mode | Templates | Livraison | Pour quoi |
 |------|-----------|-----------|-----------|
@@ -68,6 +68,20 @@ curl -X POST http://localhost:8180/v1/emails \
 curl -H "Authorization: Bearer kr_dev_local_insecure_key" http://localhost:8180/v1/emails/0192f1b4-…
 # {"id":"0192f1b4-…","status":"sent","attempts":1,…}
 ```
+
+Votre application n'envoie que le **nom** du template et ses données : le contenu vit dans le stockage de Kourrier. Pour savoir ce qui existe et vérifier un rendu :
+
+```sh
+curl -H "Authorization: Bearer kr_dev_local_insecure_key" http://localhost:8180/v1/templates
+# {"templates":[{"name":"welcome","locales":["en","fr"]}]}
+
+curl -X POST http://localhost:8180/v1/templates/welcome/preview \
+  -H "Authorization: Bearer kr_dev_local_insecure_key" \
+  -d '{"locale":"fr","data":{"name":"Jane"}}'
+# {"locale":"fr","subject":"Bienvenue sur Kourrier, Jane !","html":"…","text":"…"}
+```
+
+Un envoi avec un template inconnu est refusé immédiatement (`422 template-not-found`), il n'est jamais mis en file.
 
 La référence complète se trouve dans [docs/api.md](docs/api.md).
 

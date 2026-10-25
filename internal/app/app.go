@@ -61,6 +61,23 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		background []func(context.Context)
 	)
 
+	// Templates are read by the workers (rendering) and by the API (checks,
+	// list and preview, ADR 011): one renderer, one cache.
+	store, err := NewStorage(ctx, cfg.Storage)
+	if err != nil {
+		return err
+	}
+	renderer := templates.NewRenderer(store, templates.Options{
+		CacheTTL: cfg.Templates.CacheTTL, DefaultLocale: cfg.Templates.DefaultLocale, Metrics: metrics,
+	})
+	// Storage is a soft dependency: it is checked at startup only, so that a
+	// brief S3 outage does not take every pod out of rotation.
+	pingCtx, cancelPing := context.WithTimeout(ctx, 5*time.Second)
+	if err := store.Ping(pingCtx); err != nil {
+		logger.Warn("template storage is not reachable yet", "error", err)
+	}
+	cancelPing()
+
 	if cfg.RunsAPI() {
 		tenants, err := tenant.LoadFile(cfg.TenantsFile)
 		if err != nil {
@@ -72,6 +89,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 			Queue:        q,
 			Idempotency:  idempotency.NewStore(rdb, cfg.Redis.KeyPrefix, cfg.Idempotency.TTL),
 			Statuses:     statuses,
+			Templates:    renderer,
 			Metrics:      metrics,
 			Logger:       logger,
 			MaxBodyBytes: cfg.MaxBodyBytes,
@@ -80,10 +98,6 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	}
 
 	if cfg.RunsWorkers() {
-		store, err := NewStorage(ctx, cfg.Storage)
-		if err != nil {
-			return err
-		}
 		mailer, err := NewProvider(ctx, cfg.Mailer)
 		if err != nil {
 			return err
@@ -100,10 +114,8 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 				Max:         cfg.Worker.BackoffMax,
 			},
 		}, worker.Deps{
-			Queue: q,
-			Renderer: templates.NewRenderer(store, templates.Options{
-				CacheTTL: cfg.Templates.CacheTTL, DefaultLocale: cfg.Templates.DefaultLocale, Metrics: metrics,
-			}),
+			Queue:    q,
+			Renderer: renderer,
 			Provider: mailer,
 			Limiter:  NewLimiter(cfg.RateLimit, rdb, cfg.Redis.KeyPrefix),
 			Statuses: statuses,
@@ -114,13 +126,6 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 			func(ctx context.Context) { q.RunScheduler(ctx, cfg.Queue.SchedulerInterval) },
 			func(ctx context.Context) { collectQueueStats(ctx, q, metrics, logger) },
 		)
-		// Storage is a soft dependency: it is checked at startup only, so that
-		// a brief S3 outage does not take every pod out of rotation.
-		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		if err := store.Ping(pingCtx); err != nil {
-			logger.Warn("template storage is not reachable yet", "error", err)
-		}
-		cancel()
 	}
 
 	adminServer := newHTTPServer(cfg.AdminAddr, api.AdminHandler(metrics, checks), logger)

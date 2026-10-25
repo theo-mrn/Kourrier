@@ -19,8 +19,9 @@ const (
 var (
 	// NamePattern is the format of template names, tenant IDs and locales
 	// segments: it doubles as a path-traversal guard for the storage layer.
-	NamePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
-	localePattern = regexp.MustCompile(`^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$`)
+	NamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+	// LocalePattern is the format of template locales: "fr", "en-GB"…
+	LocalePattern = regexp.MustCompile(`^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$`)
 	tagPattern    = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 	headerPattern = regexp.MustCompile(`^X-[A-Za-z0-9-]{1,64}$`)
 )
@@ -98,7 +99,7 @@ func (r *Request) Validate() error {
 		if !NamePattern.MatchString(r.Template.Name) {
 			v.add("template.name", "must match %s", NamePattern)
 		}
-		if r.Template.Locale != "" && !localePattern.MatchString(r.Template.Locale) {
+		if r.Template.Locale != "" && !LocalePattern.MatchString(r.Template.Locale) {
 			v.add("template.locale", "must be a language tag such as \"fr\" or \"en-GB\"")
 		}
 	case r.Content != nil:

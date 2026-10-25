@@ -1,6 +1,6 @@
 # ADR 010 : Format, localisation et cache des templates
 
-**Statut** : Accepté
+**Statut** : Accepté. Amendé par l'[ADR 011](0011-templates-dans-l-api.md) : l'API lit aussi les templates (validation, liste, prévisualisation).
 
 ## Contexte
 
@@ -24,7 +24,7 @@ L'[ADR 003](0003-stockage-templates-s3.md) place les templates dans un bucket. I
 - **Cache** : les templates compilés sont gardés en mémoire pendant `KOURRIER_TEMPLATES_CACHE_TTL` (1 min). Les chargements concurrents sont fusionnés (*singleflight*). Une modification dans le bucket est donc visible en moins d'une minute, sans redéploiement.
 - **Erreurs** : template introuvable, erreur de syntaxe ou d'exécution sont **permanentes** (DLQ). Une indisponibilité du stockage est **transitoire** (retry).
 
-Le rendu se fait dans le worker, pas dans l'API : l'API reste indépendante de S3 et répond en quelques millisecondes.
+Le rendu se fait dans le worker, pas dans l'API : l'API reste indépendante de S3 et répond en quelques millisecondes. *(Amendé par l'ADR 011 : l'API vérifie désormais l'existence du template, avec cache, et laisse passer la requête si le stockage est indisponible.)*
 
 ## Conséquences
 

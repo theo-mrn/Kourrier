@@ -7,7 +7,7 @@ flowchart LR
     client["Applications clientes<br/>(ex. yner.fr)"]
 
     subgraph pod["Pod Kourrier (binaire Go unique)"]
-        api["API HTTP :8080<br/>auth · validation · idempotence"]
+        api["API HTTP :8080<br/>auth · validation · idempotence<br/>liste et prévisualisation des templates"]
         workers["Pool de workers<br/>rendu · rate limit · retries"]
         admin["Admin :9090<br/>/metrics · /livez · /readyz"]
     end
@@ -21,6 +21,7 @@ flowchart LR
     api -- "XADD" --> redis
     redis -- "XREADGROUP" --> workers
     workers -- "GetObject (cache TTL)" --> s3
+    api -. "template existe ? (cache)" .-> s3
     workers -- "Send" --> provider
     admin -. scrape .-> obs
     pod -. "logs JSON (stdout)" .-> obs
@@ -32,13 +33,14 @@ flowchart LR
 sequenceDiagram
     participant C as Client
     participant A as API
+    participant S as S3
     participant R as Redis
     participant W as Worker
-    participant S as S3
     participant P as Fournisseur
 
     C->>A: POST /v1/emails (Bearer, Idempotency-Key)
     A->>A: authentification, validation, expéditeur autorisé
+    A->>S: le template existe et compile ? (si absent du cache)
     A->>R: SET NX idempotence · statut "queued" · XADD stream
     A-->>C: 202 {id, status: queued}
     W->>R: XREADGROUP (job en pending)

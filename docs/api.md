@@ -44,6 +44,7 @@ Règles :
 
 - `from` est facultatif (expéditeur par défaut du tenant) et doit faire partie des `allowed_senders`.
 - Exactement un champ parmi `template` et `content`.
+- `template` doit exister pour la clé d'API, dans sa locale ou dans la locale par défaut, et compiler. Sinon : `422` (`template-not-found` ou `template-invalid`) et rien n'est envoyé. Si le stockage des templates est indisponible, la requête est acceptée quand même et le worker réessaie ([ADR 011](adr/0011-templates-dans-l-api.md)).
 - 50 destinataires au maximum (`to` + `cc` + `bcc`, limite de SES).
 - `headers` : uniquement `X-*`, `List-Unsubscribe`, `List-Unsubscribe-Post`, `List-Id` (20 au maximum).
 - `tags` : 10 au maximum, clés et valeurs `[A-Za-z0-9_.-]{1,64}`. Ils sont transmis à SES (`EmailTags`) avec `kourrier_tenant` et `kourrier_template`.
@@ -76,6 +77,41 @@ Les identifiants sont des UUIDv7 (triés chronologiquement).
 
 `status` : `queued` → (`retrying` → …) → `sent` | `failed`. En cas de retry, `last_error` et `next_attempt_at` sont renseignés. Les statuts sont conservés 7 jours (`KOURRIER_STATUS_TTL`). Un ID inconnu ou appartenant à un autre tenant renvoie `404`.
 
+## `GET /v1/templates`
+
+Liste les templates disponibles pour la clé d'API, avec leurs locales.
+
+```json
+{
+  "templates": [
+    { "name": "reinitialisation", "locales": ["fr"] },
+    { "name": "welcome", "locales": ["en", "fr"] }
+  ]
+}
+```
+
+## `POST /v1/templates/{nom}/preview`
+
+Rend un template **sans rien envoyer** : pour vérifier un texte, une mise en page ou les données à fournir.
+
+```json
+{ "locale": "fr", "data": { "name": "Jane", "login_url": "https://example.com/login" } }
+```
+
+Réponse `200` :
+
+```json
+{ "locale": "fr", "subject": "Bienvenue sur Kourrier, Jane !", "html": "<!doctype html>…", "text": "Bonjour Jane,…" }
+```
+
+`locale` est la locale réellement utilisée : la locale par défaut si celle demandée n'existe pas. Avec `Accept: text/html`, la réponse est le HTML brut, à ouvrir dans un navigateur (`make preview` en local).
+
+Erreurs :
+- `404 template-not-found` : le template n'existe pas pour cette clé ;
+- `422 template-invalid` : le template ne compile pas, ou échoue avec ces données (le détail indique le fichier et la ligne).
+
+Une variable absente de `data` ne provoque pas d'erreur. Elle s'affiche `<no value>` dans l'objet et le texte, et reste vide dans le HTML : la prévisualisation sert à le repérer.
+
 ## Erreurs
 
 Les erreurs suivent la [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) (`application/problem+json`) :
@@ -101,8 +137,10 @@ Les erreurs suivent la [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) (`appl
 | <a id="too-large"></a>`too-large` | 413 | Corps supérieur à `KOURRIER_MAX_BODY_BYTES`. |
 | <a id="validation"></a>`validation` | 422 | Champs invalides (détail dans `errors`). |
 | <a id="idempotency-key-reused"></a>`idempotency-key-reused` | 422 | Clé déjà utilisée avec un corps différent. |
+| <a id="template-not-found"></a>`template-not-found` | 422, 404 | Template inconnu pour cette clé (422 dans un envoi, 404 en prévisualisation). Voir `GET /v1/templates`. |
+| <a id="template-invalid"></a>`template-invalid` | 422 | Template qui ne compile pas, ou qui échoue avec les données fournies. |
 | <a id="internal"></a>`internal` | 500 | Erreur interne. |
-| <a id="unavailable"></a>`unavailable` | 503 | Redis indisponible. Réessayer après `Retry-After` (avec la même `Idempotency-Key`). |
+| <a id="unavailable"></a>`unavailable` | 503 | Redis indisponible, ou stockage des templates indisponible (liste, prévisualisation). Réessayer après `Retry-After`. |
 
 ## Endpoints d'administration (port 9090)
 

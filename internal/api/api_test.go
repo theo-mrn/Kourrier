@@ -19,6 +19,8 @@ import (
 	"github.com/theo-mrn/kourrier/internal/observability"
 	"github.com/theo-mrn/kourrier/internal/queue"
 	"github.com/theo-mrn/kourrier/internal/status"
+	"github.com/theo-mrn/kourrier/internal/storage"
+	"github.com/theo-mrn/kourrier/internal/templates"
 	"github.com/theo-mrn/kourrier/internal/tenant"
 )
 
@@ -33,7 +35,28 @@ type fixture struct {
 	mr      *miniredis.Miniredis
 }
 
+// testTemplates are the templates of the fixture's tenants.
+func testTemplates() *storage.Memory {
+	return storage.NewMemory(map[string]string{
+		"yner/welcome/fr/subject.txt":  "Bienvenue {{.name}}",
+		"yner/welcome/fr/body.html":    "<p>Bonjour {{.name}}</p>",
+		"yner/welcome/fr/body.txt":     "Bonjour {{.name}}",
+		"yner/welcome/en/subject.txt":  "Welcome {{.name}}",
+		"yner/welcome/en/body.txt":     "Hello {{.name}}",
+		"yner/broken/fr/subject.txt":   "{{.name",
+		"yner/receipt/en/subject.txt":  `Receipt of {{date "02/01/2006" .paid_at}}`,
+		"yner/receipt/en/body.txt":     "Total",
+		"other/welcome/en/subject.txt": "Other tenant",
+		"other/welcome/en/body.txt":    "Other tenant",
+	})
+}
+
 func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	return newFixtureWithStore(t, testTemplates())
+}
+
+func newFixtureWithStore(t *testing.T, store storage.Provider) *fixture {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -65,6 +88,7 @@ func newFixture(t *testing.T) *fixture {
 		Queue:       q,
 		Idempotency: idempotency.NewStore(rdb, "kourrier", time.Hour),
 		Statuses:    status.NewStore(rdb, "kourrier", time.Hour),
+		Templates:   templates.NewRenderer(store, templates.Options{DefaultLocale: "en"}),
 		Metrics:     observability.NewMetrics("test"),
 		Logger:      logger,
 	})
@@ -170,7 +194,7 @@ func TestSendRejectsInvalidRequests(t *testing.T) {
 
 func TestSendAllowsWildcardSender(t *testing.T) {
 	f := newFixture(t)
-	rec := f.do("POST", "/v1/emails", ynerKey, `{"from":{"email":"weekly@news.yner.fr"},"to":[{"email":"a@b.fr"}],"template":{"name":"x"}}`)
+	rec := f.do("POST", "/v1/emails", ynerKey, `{"from":{"email":"weekly@news.yner.fr"},"to":[{"email":"a@b.fr"}],"template":{"name":"welcome"}}`)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}

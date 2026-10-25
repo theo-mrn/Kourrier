@@ -1,6 +1,7 @@
 // Package api exposes the HTTP API used by client applications to submit
 // e-mails (ADR 002). It validates and enqueues requests and answers
-// 202 Accepted immediately: rendering and sending happen in the workers.
+// 202 Accepted immediately: rendering and sending happen in the workers. It
+// also exposes the tenant's templates: list and preview (ADR 011).
 package api
 
 import (
@@ -44,6 +45,7 @@ type Server struct {
 	queue       Enqueuer
 	idempotency IdempotencyStore
 	statuses    StatusStore
+	templates   Templates
 	metrics     *observability.Metrics
 	logger      *slog.Logger
 	maxBody     int64
@@ -55,6 +57,7 @@ type Deps struct {
 	Queue       Enqueuer
 	Idempotency IdempotencyStore
 	Statuses    StatusStore
+	Templates   Templates
 	Metrics     *observability.Metrics
 	Logger      *slog.Logger
 	// MaxBodyBytes limits request bodies (default 1 MiB).
@@ -68,7 +71,7 @@ func New(d Deps) *Server {
 	}
 	return &Server{
 		tenants: d.Tenants, queue: d.Queue, idempotency: d.Idempotency, statuses: d.Statuses,
-		metrics: d.Metrics, logger: d.Logger, maxBody: d.MaxBodyBytes,
+		templates: d.Templates, metrics: d.Metrics, logger: d.Logger, maxBody: d.MaxBodyBytes,
 	}
 }
 
@@ -77,6 +80,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/emails", s.requireTenant(s.handleSend))
 	mux.HandleFunc("GET /v1/emails/{id}", s.requireTenant(s.handleGet))
+	mux.HandleFunc("GET /v1/templates", s.requireTenant(s.handleListTemplates))
+	mux.HandleFunc("POST /v1/templates/{name}/preview", s.requireTenant(s.handlePreview))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusNotFound, "not-found", "no such endpoint")
 	})
@@ -115,6 +120,14 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusForbidden, "sender-not-allowed",
 			"sender "+req.From.Email+" is not allowed for this API key")
 		return
+	}
+	// Fail fast on a template that would never render, instead of answering
+	// 202 and dead-lettering the e-mail later (ADR 011).
+	if req.Template != nil {
+		if p := s.checkTemplate(ctx, t.ID, req.Template); p != nil {
+			writeProblemDetails(w, r, p)
+			return
+		}
 	}
 
 	jobID := id.New()

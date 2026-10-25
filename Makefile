@@ -76,6 +76,21 @@ send: ## Send the demo welcome e-mail through the local API
 	  -d '{"to":[{"email":"jane@example.com","name":"Jane"}],"template":{"name":"welcome","locale":"fr","data":{"name":"Jane","login_url":"https://example.com/login"}}}'
 	@echo
 
+TEMPLATE ?= welcome
+LOCALE   ?= fr
+DATA     ?= {"name":"Jane","login_url":"https://example.com/login"}
+
+.PHONY: preview
+preview: ## Render a template without sending it and open it (TEMPLATE=, LOCALE=, DATA=)
+	@mkdir -p tmp
+	@curl -sS --fail-with-body -X POST "http://localhost:$(KOURRIER_PORT)/v1/templates/$(TEMPLATE)/preview" \
+	  -H "Authorization: Bearer $(DEV_KEY)" \
+	  -H "Content-Type: application/json" \
+	  -H "Accept: text/html" \
+	  -d '{"locale":"$(LOCALE)","data":$(DATA)}' -o tmp/preview.html
+	@echo "tmp/preview.html"
+	@open tmp/preview.html 2>/dev/null || xdg-open tmp/preview.html 2>/dev/null || true
+
 .PHONY: docker
 docker: ## Build the container image
 	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
