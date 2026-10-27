@@ -32,6 +32,7 @@ import (
 	"github.com/theo-mrn/kourrier/internal/storage"
 	"github.com/theo-mrn/kourrier/internal/storage/fsstore"
 	"github.com/theo-mrn/kourrier/internal/storage/s3store"
+	"github.com/theo-mrn/kourrier/internal/submit"
 	"github.com/theo-mrn/kourrier/internal/templates"
 	"github.com/theo-mrn/kourrier/internal/tenant"
 	"github.com/theo-mrn/kourrier/internal/worker"
@@ -84,10 +85,17 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 			return err
 		}
 		logger.Info("tenants loaded", "count", tenants.Len())
+		submitter := submit.New(submit.Deps{
+			Queue:       q,
+			Idempotency: idempotency.NewStore(rdb, cfg.Redis.KeyPrefix, cfg.Idempotency.TTL),
+			Statuses:    statuses,
+			Templates:   renderer,
+			Metrics:     metrics,
+			Logger:      logger,
+		})
 		srv := api.New(api.Deps{
 			Tenants:      tenants,
-			Queue:        q,
-			Idempotency:  idempotency.NewStore(rdb, cfg.Redis.KeyPrefix, cfg.Idempotency.TTL),
+			Submitter:    submitter,
 			Statuses:     statuses,
 			Templates:    renderer,
 			Metrics:      metrics,

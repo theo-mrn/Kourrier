@@ -20,6 +20,7 @@ import (
 	"github.com/theo-mrn/kourrier/internal/queue"
 	"github.com/theo-mrn/kourrier/internal/status"
 	"github.com/theo-mrn/kourrier/internal/storage"
+	"github.com/theo-mrn/kourrier/internal/submit"
 	"github.com/theo-mrn/kourrier/internal/templates"
 	"github.com/theo-mrn/kourrier/internal/tenant"
 )
@@ -56,6 +57,7 @@ func newFixture(t *testing.T) *fixture {
 	return newFixtureWithStore(t, testTemplates())
 }
 
+// newFixtureWithStore serves the templates of store.
 func newFixtureWithStore(t *testing.T, store storage.Provider) *fixture {
 	t.Helper()
 	mr := miniredis.RunT(t)
@@ -83,14 +85,25 @@ func newFixtureWithStore(t *testing.T, store storage.Provider) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(Deps{
-		Tenants:     tenants,
+	metrics := observability.NewMetrics("test")
+	statuses := status.NewStore(rdb, "kourrier", time.Hour)
+	renderer := templates.NewRenderer(store, templates.Options{DefaultLocale: "en"})
+	submitter := submit.New(submit.Deps{
 		Queue:       q,
 		Idempotency: idempotency.NewStore(rdb, "kourrier", time.Hour),
-		Statuses:    status.NewStore(rdb, "kourrier", time.Hour),
-		Templates:   templates.NewRenderer(store, templates.Options{DefaultLocale: "en"}),
-		Metrics:     observability.NewMetrics("test"),
+		Statuses:    statuses,
+		Templates:   renderer,
+		Metrics:     metrics,
 		Logger:      logger,
+	})
+	srv := New(Deps{
+		Tenants:      tenants,
+		Submitter:    submitter,
+		Statuses:     statuses,
+		Templates:    renderer,
+		Metrics:      metrics,
+		Logger:       logger,
+		MaxBodyBytes: 64 << 10,
 	})
 	return &fixture{handler: srv.Handler(), queue: q, mr: mr}
 }

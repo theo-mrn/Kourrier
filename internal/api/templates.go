@@ -7,43 +7,16 @@ import (
 	"mime"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/theo-mrn/kourrier/internal/mail"
 	"github.com/theo-mrn/kourrier/internal/templates"
 )
 
 // Templates gives the API read access to the templates of a tenant (ADR 011).
+// The existence check of POST /v1/emails is done by submit.Service.
 type Templates interface {
-	Check(ctx context.Context, tenant, name, locale string) error
 	List(ctx context.Context, tenant string) ([]templates.Info, error)
 	Render(ctx context.Context, tenant string, ref mail.TemplateRef) (*templates.Rendered, error)
-}
-
-// templateCheckTimeout bounds the storage round-trip added to POST /v1/emails
-// when the template is not cached yet.
-const templateCheckTimeout = 2 * time.Second
-
-// checkTemplate rejects a request whose template does not exist or does not
-// compile. When the storage cannot be read, the request is accepted anyway:
-// the worker retries, and a storage outage must not stop e-mails from being
-// queued.
-func (s *Server) checkTemplate(ctx context.Context, tenant string, ref *mail.TemplateRef) *Problem {
-	ctx, cancel := context.WithTimeout(ctx, templateCheckTimeout)
-	defer cancel()
-	err := s.templates.Check(ctx, tenant, ref.Name, ref.Locale)
-	switch {
-	case err == nil:
-		return nil
-	case errors.Is(err, templates.ErrNotFound):
-		return templateNotFound(ref.Name, http.StatusUnprocessableEntity)
-	case errors.Is(err, templates.ErrInvalid):
-		return templateInvalid(err)
-	default:
-		s.logger.WarnContext(ctx, "template not checked: storage unavailable",
-			"tenant", tenant, "template", ref.Name, "error", err)
-		return nil
-	}
 }
 
 // TemplatesResponse is returned by GET /v1/templates.

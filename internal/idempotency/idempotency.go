@@ -38,14 +38,15 @@ func NewStore(rdb redis.UniversalClient, prefix string, ttl time.Duration) *Stor
 	return &Store{rdb: rdb, prefix: "{" + prefix + "}:idem:", ttl: ttl}
 }
 
-// Reserve atomically claims key for rec. If the key was already claimed, the
+// Reserve atomically claims key for rec within scope (a tenant ID, or a
+// tenant-derived namespace). If the key was already claimed, the
 // existing record is returned and nothing is written.
-func (s *Store) Reserve(ctx context.Context, tenant, key string, rec Record) (*Record, error) {
+func (s *Store) Reserve(ctx context.Context, scope, key string, rec Record) (*Record, error) {
 	payload, err := json.Marshal(rec)
 	if err != nil {
 		return nil, err
 	}
-	redisKey := s.redisKey(tenant, key)
+	redisKey := s.redisKey(scope, key)
 	// SET NX GET returns the previous value when the key exists (Redis 7+).
 	prev, err := s.rdb.SetArgs(ctx, redisKey, payload, redis.SetArgs{Mode: "NX", Get: true, TTL: s.ttl}).Result()
 	if errors.Is(err, redis.Nil) {
@@ -63,15 +64,15 @@ func (s *Store) Reserve(ctx context.Context, tenant, key string, rec Record) (*R
 
 // Release forgets key, so the request can be retried after a failure that
 // happened before the job was enqueued.
-func (s *Store) Release(ctx context.Context, tenant, key string) error {
-	return s.rdb.Del(ctx, s.redisKey(tenant, key)).Err()
+func (s *Store) Release(ctx context.Context, scope, key string) error {
+	return s.rdb.Del(ctx, s.redisKey(scope, key)).Err()
 }
 
 // The client key is hashed so that arbitrary header values make safe,
 // bounded Redis keys.
-func (s *Store) redisKey(tenant, key string) string {
+func (s *Store) redisKey(scope, key string) string {
 	sum := sha256.Sum256([]byte(key))
-	return s.prefix + tenant + ":" + hex.EncodeToString(sum[:])
+	return s.prefix + scope + ":" + hex.EncodeToString(sum[:])
 }
 
 // Fingerprint returns a stable digest of v's JSON encoding. encoding/json
