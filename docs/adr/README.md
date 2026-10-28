@@ -15,3 +15,4 @@ Projet : microservice d'e-mailing asynchrone, cloud-native et agnostique.
 | [009](0009-rate-limiting-distribue.md) | Rate limiting distribué | Accepté |
 | [010](0010-format-des-templates.md) | Format, localisation et cache des templates | Accepté, amendé par 011 |
 | [011](0011-templates-dans-l-api.md) | Validation, catalogue et prévisualisation des templates par l'API | Accepté |
+| [012](0012-entree-evenementielle-cloudevents.md) | Entrée événementielle (CloudEvents) | Accepté |
