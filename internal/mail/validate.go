@@ -130,7 +130,7 @@ func (r *Request) Validate() error {
 		v.add("tags", "at most %d tags are allowed", MaxTags)
 	}
 	for k, val := range r.Tags {
-		if !tagPattern.MatchString(k) || !tagPattern.MatchString(val) {
+		if !ValidTag(k, val) {
 			v.add("tags."+k, "keys and values must match %s", tagPattern)
 		}
 	}
@@ -139,6 +139,11 @@ func (r *Request) Validate() error {
 		return v
 	}
 	return nil
+}
+
+// ValidTag reports whether a provider tag key and value are acceptable.
+func ValidTag(key, value string) bool {
+	return tagPattern.MatchString(key) && tagPattern.MatchString(value)
 }
 
 func validateAddress(v *ValidationError, field string, a Address) {
