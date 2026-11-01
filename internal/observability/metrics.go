@@ -37,6 +37,15 @@ type Metrics struct {
 	RateLimitWait  prometheus.Histogram
 	QueueDepth     *prometheus.GaugeVec
 	WorkersBusy    prometheus.Gauge
+
+	// Event ingress (ADR 012). The "source" label is "http" or the name of a
+	// configured NATS source, and "route" a configured route name: both are
+	// bounded by configuration.
+	EventsReceived      *prometheus.CounterVec
+	EventRoutes         *prometheus.CounterVec
+	EventDispatch       *prometheus.HistogramVec
+	EventsBackpressured prometheus.Gauge
+	EventSourceUp       *prometheus.GaugeVec
 }
 
 // NewMetrics creates the collectors on a dedicated registry, along with the
@@ -110,12 +119,35 @@ func NewMetrics(version string) *Metrics {
 		}),
 	}
 
+	m.EventsReceived = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace, Name: "events_received_total",
+		Help: "CloudEvents received, by source and outcome (accepted, ignored, rejected, retry).",
+	}, []string{"source", "outcome"})
+	m.EventRoutes = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace, Name: "event_routes_total",
+		Help: "Route evaluations that matched an event, by outcome (queued, replayed, rejected, failed).",
+	}, []string{"tenant", "route", "outcome"})
+	m.EventDispatch = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace, Name: "event_dispatch_duration_seconds",
+		Help:    "Time spent routing an event and enqueuing the resulting e-mails.",
+		Buckets: []float64{.0005, .001, .0025, .005, .01, .025, .05, .1, .25, .5, 1},
+	}, []string{"source"})
+	m.EventsBackpressured = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace, Name: "events_backpressure",
+		Help: "1 while event ingestion is paused because the e-mail queue is above its limit.",
+	})
+	m.EventSourceUp = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace, Name: "event_source_up",
+		Help: "1 when the event source is connected and consuming.",
+	}, []string{"source"})
+
 	f(collectors.NewGoCollector())
 	f(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	for _, c := range []prometheus.Collector{
 		m.HTTPRequests, m.HTTPDuration, m.JobsEnqueued, m.IdempotentReplays,
 		m.EmailsSent, m.EmailsFailed, m.JobRetries, m.SendDuration, m.DeliveryLatency,
 		m.TemplateRender, m.TemplateCache, m.RateLimitWait, m.QueueDepth, m.WorkersBusy,
+		m.EventsReceived, m.EventRoutes, m.EventDispatch, m.EventsBackpressured, m.EventSourceUp,
 	} {
 		f(c)
 	}
