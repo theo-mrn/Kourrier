@@ -17,3 +17,4 @@ Projet : microservice d'e-mailing asynchrone, cloud-native et agnostique.
 | [011](0011-templates-dans-l-api.md) | Validation, catalogue et prévisualisation des templates par l'API | Accepté |
 | [012](0012-entree-evenementielle-cloudevents.md) | Entrée événementielle (CloudEvents) | Accepté |
 | [013](0013-routage-declaratif-cel.md) | Routage déclaratif avec CEL | Accepté |
+| [014](0014-nats-jetstream.md) | NATS JetStream comme premier broker | Accepté |
