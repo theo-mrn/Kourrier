@@ -1,0 +1,30 @@
+# Example routes file (ADR 012, ADR 013). Reference: docs/events.md
+#
+#   kourrier routes check -tenants dev/tenants.yaml examples/routes.yaml
+#   kourrier routes test -tenants dev/tenants.yaml -tenant demo \
+#     -event examples/events/user-signed-up.json examples/routes.yaml
+apiVersion: kourrier/v1alpha1
+
+# Event sources consumed by Kourrier. Every event read from a source is
+# routed with the routes of the source's tenant only. Events can also be
+# pushed to POST /v1/events, authenticated with the tenant's API key.
+sources:
+  nats:
+    - name: demo-users          # label in logs and metrics
+      tenant: demo
+      stream: USERS             # must exist: Kourrier never creates streams
+      consumer: kourrier        # durable consumer, created or updated at startup
+      filter_subjects: ["users.>"]
+
+routes:
+  # Welcome e-mail when a user signs up and verified their address.
+  - name: welcome
+    tenant: demo
+    match:
+      types: [dev.kourrier.demo.user.signed_up]
+      when: data.email_verified
+    email:
+      template: welcome
+      to: '{"email": data.email, "name": data.first_name}'
+      locale: data.?locale.orValue("en")
+      data: '{"name": data.first_name, "login_url": "https://demo.kourrier.dev/login"}'

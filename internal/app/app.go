@@ -57,9 +57,10 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 
 	checks := map[string]api.Check{"redis": func(ctx context.Context) error { return rdb.Ping(ctx).Err() }}
 	var (
-		apiServer  *http.Server
-		pool       *worker.Pool
-		background []func(context.Context)
+		apiServer *http.Server
+		pool      *worker.Pool
+		// background components run until shutdown; an error is fatal.
+		background []func(context.Context) error
 	)
 
 	// Templates are read by the workers (rendering) and by the API (checks,
@@ -93,11 +94,17 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 			Metrics:     metrics,
 			Logger:      logger,
 		})
+		ingress, err := newEventIngress(cfg, tenants, submitter, q, metrics, logger)
+		if err != nil {
+			return err
+		}
+		background = append(background, ingress.background...)
 		srv := api.New(api.Deps{
 			Tenants:      tenants,
 			Submitter:    submitter,
 			Statuses:     statuses,
 			Templates:    renderer,
+			Events:       ingress.dispatcher,
 			Metrics:      metrics,
 			Logger:       logger,
 			MaxBodyBytes: cfg.MaxBodyBytes,
@@ -131,8 +138,8 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 			Logger:   logger,
 		})
 		background = append(background,
-			func(ctx context.Context) { q.RunScheduler(ctx, cfg.Queue.SchedulerInterval) },
-			func(ctx context.Context) { collectQueueStats(ctx, q, metrics, logger) },
+			func(ctx context.Context) error { q.RunScheduler(ctx, cfg.Queue.SchedulerInterval); return nil },
+			func(ctx context.Context) error { collectQueueStats(ctx, q, metrics, logger); return nil },
 		)
 	}
 
@@ -140,7 +147,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 
 	// Lifecycle: servers and workers run until ctx is cancelled, then shut
 	// down in order (stop accepting requests, drain workers).
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 2+len(background))
 	serve := func(s *http.Server, name string) {
 		logger.Info("http server listening", "server", name, "addr", s.Addr)
 		if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -155,7 +162,11 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	workCtx, stopWork := context.WithCancel(context.WithoutCancel(ctx))
 	var wg sync.WaitGroup
 	for _, fn := range background {
-		wg.Go(func() { fn(workCtx) })
+		wg.Go(func() {
+			if err := fn(workCtx); err != nil {
+				errCh <- err
+			}
+		})
 	}
 	if pool != nil {
 		wg.Go(func() { pool.Run(workCtx) })

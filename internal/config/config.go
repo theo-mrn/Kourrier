@@ -53,6 +53,7 @@ type Config struct {
 	Templates   Templates   `envPrefix:"TEMPLATES_"`
 	Storage     Storage     `envPrefix:"STORAGE_"`
 	Mailer      Mailer      `envPrefix:"MAILER_"`
+	Events      Events      `envPrefix:"EVENTS_"`
 }
 
 // Redis connection settings. Requires Redis >= 7.
@@ -156,6 +157,28 @@ type Filesystem struct {
 	Dir string `env:"DIR" envDefault:"./tmp/emails"`
 }
 
+// Events configures the event ingress (ADR 012). It runs with the API
+// (modes "all" and "api") and is disabled while RoutesFile is empty.
+type Events struct {
+	// RoutesFile is the routes file (sources and routes), typically mounted
+	// from a ConfigMap.
+	RoutesFile string `env:"ROUTES_FILE"`
+	// MaxQueueDepth pauses event ingestion while more e-mails than this wait
+	// in the queue, so that the backlog stays in the broker. 0 disables it.
+	MaxQueueDepth int64 `env:"MAX_QUEUE_DEPTH" envDefault:"50000"`
+	NATS          NATS  `envPrefix:"NATS_"`
+}
+
+// NATS connection settings (ADR 014). Credentials are read from files.
+type NATS struct {
+	URL         string `env:"URL" envDefault:"nats://localhost:4222"`
+	CredsFile   string `env:"CREDS_FILE"`
+	NKeyFile    string `env:"NKEY_FILE"`
+	TLSCAFile   string `env:"TLS_CA_FILE"`
+	TLSCertFile string `env:"TLS_CERT_FILE"`
+	TLSKeyFile  string `env:"TLS_KEY_FILE"`
+}
+
 // Load parses the environment and validates the result.
 func Load() (*Config, error) {
 	var c Config
@@ -192,6 +215,11 @@ func (c *Config) Validate() error {
 	check(c.Queue.VisibilityTimeout > c.Worker.SendTimeout,
 		"KOURRIER_QUEUE_VISIBILITY_TIMEOUT must be greater than KOURRIER_WORKER_SEND_TIMEOUT")
 	check(c.Storage.Provider != StorageS3 || c.Storage.S3.Bucket != "", "KOURRIER_STORAGE_S3_BUCKET is required")
+	check(c.Events.MaxQueueDepth >= 0, "KOURRIER_EVENTS_MAX_QUEUE_DEPTH must be >= 0")
+	check((c.Events.NATS.TLSCertFile == "") == (c.Events.NATS.TLSKeyFile == ""),
+		"KOURRIER_EVENTS_NATS_TLS_CERT_FILE and KOURRIER_EVENTS_NATS_TLS_KEY_FILE must be set together")
+	check(c.Events.NATS.CredsFile == "" || c.Events.NATS.NKeyFile == "",
+		"KOURRIER_EVENTS_NATS_CREDS_FILE and KOURRIER_EVENTS_NATS_NKEY_FILE are mutually exclusive")
 	return errors.Join(errs...)
 }
 

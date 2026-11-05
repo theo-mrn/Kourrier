@@ -38,6 +38,7 @@ type Server struct {
 	submit    Submitter
 	statuses  StatusReader
 	templates Templates
+	events    EventDispatcher
 	metrics   *observability.Metrics
 	logger    *slog.Logger
 	maxBody   int64
@@ -49,8 +50,10 @@ type Deps struct {
 	Submitter Submitter
 	Statuses  StatusReader
 	Templates Templates
-	Metrics   *observability.Metrics
-	Logger    *slog.Logger
+	// Events enables POST /v1/events (ADR 012). Nil disables the endpoint.
+	Events  EventDispatcher
+	Metrics *observability.Metrics
+	Logger  *slog.Logger
 	// MaxBodyBytes limits request bodies (default 1 MiB).
 	MaxBodyBytes int64
 }
@@ -61,7 +64,7 @@ func New(d Deps) *Server {
 		d.MaxBodyBytes = 1 << 20
 	}
 	return &Server{
-		tenants: d.Tenants, submit: d.Submitter, statuses: d.Statuses, templates: d.Templates,
+		tenants: d.Tenants, submit: d.Submitter, statuses: d.Statuses, templates: d.Templates, events: d.Events,
 		metrics: d.Metrics, logger: d.Logger, maxBody: d.MaxBodyBytes,
 	}
 }
@@ -73,6 +76,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/emails/{id}", s.requireTenant(s.handleGet))
 	mux.HandleFunc("GET /v1/templates", s.requireTenant(s.handleListTemplates))
 	mux.HandleFunc("POST /v1/templates/{name}/preview", s.requireTenant(s.handlePreview))
+	if s.events != nil {
+		mux.HandleFunc("POST /v1/events", s.requireTenant(s.handleEvent))
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusNotFound, "not-found", "no such endpoint")
 	})

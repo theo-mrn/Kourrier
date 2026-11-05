@@ -1,0 +1,14 @@
+{
+  "specversion": "1.0",
+  "id": "4c4a1d6e-6b0f-4c8e-9a51-9d7f0f0c2b11",
+  "source": "/demo/users",
+  "type": "dev.kourrier.demo.user.signed_up",
+  "time": "2026-11-12T10:00:00Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "email": "jane@example.com",
+    "first_name": "Jane",
+    "locale": "fr",
+    "email_verified": true
+  }
+}

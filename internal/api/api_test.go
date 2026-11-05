@@ -14,10 +14,12 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/theo-mrn/kourrier/internal/dispatch"
 	"github.com/theo-mrn/kourrier/internal/idempotency"
 	"github.com/theo-mrn/kourrier/internal/mail"
 	"github.com/theo-mrn/kourrier/internal/observability"
 	"github.com/theo-mrn/kourrier/internal/queue"
+	"github.com/theo-mrn/kourrier/internal/routing"
 	"github.com/theo-mrn/kourrier/internal/status"
 	"github.com/theo-mrn/kourrier/internal/storage"
 	"github.com/theo-mrn/kourrier/internal/submit"
@@ -54,11 +56,23 @@ func testTemplates() *storage.Memory {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	return newFixtureWithStore(t, testTemplates())
+	return newFixtureWith(t, testTemplates(), "")
 }
 
-// newFixtureWithStore serves the templates of store.
 func newFixtureWithStore(t *testing.T, store storage.Provider) *fixture {
+	t.Helper()
+	return newFixtureWith(t, store, "")
+}
+
+// newFixtureWithRoutes enables POST /v1/events.
+func newFixtureWithRoutes(t *testing.T, routes string) *fixture {
+	t.Helper()
+	return newFixtureWith(t, testTemplates(), routes)
+}
+
+// newFixtureWith serves the templates of store, and enables POST /v1/events
+// when routes is not empty.
+func newFixtureWith(t *testing.T, store storage.Provider, routes string) *fixture {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -96,11 +110,20 @@ func newFixtureWithStore(t *testing.T, store storage.Provider) *fixture {
 		Metrics:     metrics,
 		Logger:      logger,
 	})
+	var events EventDispatcher
+	if routes != "" {
+		cfg, err := routing.Parse([]byte(routes), tenants)
+		if err != nil {
+			t.Fatal(err)
+		}
+		events = dispatch.New(dispatch.Deps{Router: cfg.Router, Submitter: submitter, Metrics: metrics, Logger: logger})
+	}
 	srv := New(Deps{
 		Tenants:      tenants,
 		Submitter:    submitter,
 		Statuses:     statuses,
 		Templates:    renderer,
+		Events:       events,
 		Metrics:      metrics,
 		Logger:       logger,
 		MaxBodyBytes: 64 << 10,
