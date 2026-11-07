@@ -6,6 +6,10 @@
 //	kourrier keygen                generate an API key and its SHA-256 digest
 //	kourrier dlq list [-n N]       list jobs in the dead-letter queue
 //	kourrier dlq replay [-n N]     re-enqueue jobs from the dead-letter queue
+//	kourrier routes check [-tenants FILE] ROUTES
+//	                               validate a routes file (for CI)
+//	kourrier routes test -tenant ID [-tenants FILE] -event EVENT ROUTES
+//	                               show the e-mails a CloudEvent would produce
 //	kourrier healthcheck [-addr]   probe the admin /readyz endpoint (for Docker)
 //	kourrier version               print the version
 package main
@@ -51,13 +55,15 @@ func run(args []string, stdout io.Writer) error {
 		return keygen(stdout)
 	case "dlq":
 		return dlq(args, stdout)
+	case "routes":
+		return routes(args, stdout)
 	case "healthcheck":
 		return healthcheck(args)
 	case "version", "--version", "-v":
 		fmt.Fprintln(stdout, version)
 		return nil
 	case "help", "--help", "-h":
-		fmt.Fprintln(stdout, "usage: kourrier [serve|keygen|dlq list|dlq replay|healthcheck|version]")
+		fmt.Fprintln(stdout, "usage: kourrier [serve|keygen|dlq list|dlq replay|routes check|routes test|healthcheck|version]")
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q (see kourrier help)", cmd)
