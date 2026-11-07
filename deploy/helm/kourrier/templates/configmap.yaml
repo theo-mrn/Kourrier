@@ -1,6 +1,14 @@
 {{- if not (has .Values.mode (list "all" "api" "worker")) }}
 {{- fail "mode must be one of all, api, worker" }}
 {{- end }}
+{{- with .Values.events.nats.tls }}
+{{- if ne (empty .certKey) (empty .keyKey) }}
+{{- fail "events.nats.tls.certKey and events.nats.tls.keyKey must be set together" }}
+{{- end }}
+{{- end }}
+{{- if and (or .Values.events.nats.credsKey .Values.events.nats.nkeyKey .Values.events.nats.tls.caKey .Values.events.nats.tls.certKey) (not .Values.events.nats.secretName) }}
+{{- fail "events.nats.secretName is required when a NATS credential key is set" }}
+{{- end }}
 {{- if not (has .Values.mailer.provider (list "aws-ses" "smtp" "console" "filesystem")) }}
 {{- fail "mailer.provider must be one of aws-ses, smtp, console, filesystem" }}
 {{- end }}
@@ -46,3 +54,23 @@ data:
   KOURRIER_MAILER_SMTP_TLS: {{ .Values.mailer.smtp.tls | quote }}
   KOURRIER_MAILER_SMTP_USERNAME: {{ .Values.mailer.smtp.username | quote }}
   KOURRIER_MAILER_FILESYSTEM_DIR: /tmp/emails
+  {{- if include "kourrier.eventsEnabled" . }}
+  KOURRIER_EVENTS_ROUTES_FILE: /etc/kourrier/routes.yaml
+  KOURRIER_EVENTS_MAX_QUEUE_DEPTH: {{ .Values.events.maxQueueDepth | quote }}
+  KOURRIER_EVENTS_NATS_URL: {{ .Values.events.nats.url | quote }}
+  {{- with .Values.events.nats.credsKey }}
+  KOURRIER_EVENTS_NATS_CREDS_FILE: /etc/kourrier/nats/{{ . }}
+  {{- end }}
+  {{- with .Values.events.nats.nkeyKey }}
+  KOURRIER_EVENTS_NATS_NKEY_FILE: /etc/kourrier/nats/{{ . }}
+  {{- end }}
+  {{- with .Values.events.nats.tls.caKey }}
+  KOURRIER_EVENTS_NATS_TLS_CA_FILE: /etc/kourrier/nats/{{ . }}
+  {{- end }}
+  {{- with .Values.events.nats.tls.certKey }}
+  KOURRIER_EVENTS_NATS_TLS_CERT_FILE: /etc/kourrier/nats/{{ . }}
+  {{- end }}
+  {{- with .Values.events.nats.tls.keyKey }}
+  KOURRIER_EVENTS_NATS_TLS_KEY_FILE: /etc/kourrier/nats/{{ . }}
+  {{- end }}
+  {{- end }}

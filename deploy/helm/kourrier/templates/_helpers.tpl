@@ -46,3 +46,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "kourrier.runsAPI" -}}
 {{- if or (eq .Values.mode "all") (eq .Values.mode "api") }}true{{ end }}
 {{- end }}
+
+{{- define "kourrier.routesConfigMap" -}}
+{{- default (printf "%s-routes" (include "kourrier.fullname" .)) .Values.events.existingConfigMap }}
+{{- end }}
+
+{{/* The event ingress runs with the API, when routes are configured. */}}
+{{- define "kourrier.eventsEnabled" -}}
+{{- if and (include "kourrier.runsAPI" .) (or .Values.events.routes .Values.events.existingConfigMap) }}true{{ end }}
+{{- end }}

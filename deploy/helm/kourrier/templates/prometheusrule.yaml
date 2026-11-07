@@ -45,4 +45,30 @@ spec:
             severity: warning
           annotations:
             summary: The {{ "{{" }} $labels.provider {{ "}}" }} provider keeps returning transient errors
+        {{- if include "kourrier.eventsEnabled" . }}
+        - alert: KourrierEventsRejected
+          expr: sum by (namespace, source) (rate(kourrier_events_received_total{outcome="rejected"}[10m])) > {{ .Values.prometheusRule.eventRejectionRateThreshold }}
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Events from {{ "{{" }} $labels.source {{ "}}" }} are rejected
+            description: Producers send invalid events or a route cannot be evaluated. The reason is logged ("event rejected"); NATS also publishes MSG_TERMINATED advisories.
+        - alert: KourrierEventSourceDown
+          expr: max by (namespace, source) (kourrier_event_source_up) == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Kourrier is not consuming the event source {{ "{{" }} $labels.source {{ "}}" }}
+            description: Check the NATS connection, the stream and the consumer (logs "cannot start consuming").
+        - alert: KourrierEventsBackpressure
+          expr: max by (namespace) (kourrier_events_backpressure) == 1
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Event ingestion is paused because the e-mail queue is full
+            description: E-mails are sent slower than events arrive; the backlog accumulates in the broker. Check the provider, the rate limit and the worker capacity.
+        {{- end }}
 {{- end }}

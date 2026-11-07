@@ -19,9 +19,15 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - run: go test -race -coverprofile=coverage.out ./...
+      # The example routes are documentation: they must stay valid.
+      - run: go run ./cmd/kourrier routes check -tenants dev/tenants.yaml examples/routes.yaml
       - uses: golangci/golangci-lint-action@v8
         with:
           version: latest
+      # Known vulnerabilities in the dependencies actually reachable from the code.
+      - uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
 
   helm:
     runs-on: ubuntu-latest
@@ -30,6 +36,7 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: helm lint deploy/helm/kourrier
       - run: helm template kourrier deploy/helm/kourrier --set serviceMonitor.enabled=true --set networkPolicy.enabled=true > /dev/null
+      - run: helm template kourrier deploy/helm/kourrier -f deploy/helm/kourrier/ci/events-values.yaml > /dev/null
 
   image:
     needs: [test, helm]

@@ -1,9 +1,11 @@
-# Local development stack: Redis and Kourrier, e-mails printed by the console
-# driver. Nothing leaves the machine and no AWS account is needed (ADR 004).
+# Local development stack: Redis, NATS and Kourrier, e-mails printed by the
+# console driver. Nothing leaves the machine and no AWS account is needed
+# (ADR 004).
 #
-#   make up     # start (http://localhost:8180)
-#   make send   # send the demo "welcome" e-mail
-#   make logs   # read it
+#   make up          # start (http://localhost:8180)
+#   make send        # send the demo "welcome" e-mail through the HTTP API
+#   make event       # publish the demo CloudEvent to NATS (examples/routes.yaml)
+#   make logs        # read the e-mails
 #
 # Templates are read from examples/templates on every send: edit a file and
 # send again to see the result. For the production-like drivers (S3 storage and
@@ -19,6 +21,7 @@ services:
     build: .
     depends_on:
       redis: { condition: service_healthy }
+      nats-init: { condition: service_completed_successfully }
     ports:
       - "127.0.0.1:${KOURRIER_PORT:-8180}:8080"
       - "127.0.0.1:${KOURRIER_ADMIN_PORT:-9190}:9090"
@@ -33,8 +36,11 @@ services:
       KOURRIER_TEMPLATES_DEFAULT_LOCALE: en
       KOURRIER_RATE_LIMIT_PER_SECOND: "0"
       KOURRIER_MAILER_PROVIDER: console
+      KOURRIER_EVENTS_ROUTES_FILE: /etc/kourrier/routes.yaml
+      KOURRIER_EVENTS_NATS_URL: nats://nats:4222
     volumes:
       - ./dev/tenants.yaml:/etc/kourrier/tenants.yaml:ro
+      - ./examples/routes.yaml:/etc/kourrier/routes.yaml:ro
       - ./examples/templates:/templates:ro
 
   # Also used on its own by `make run`, which runs Kourrier from source.
@@ -51,5 +57,29 @@ services:
       timeout: 2s
       retries: 15
 
+  nats:
+    image: nats:2.12-alpine
+    command: ["--jetstream", "--store_dir", "/data"]
+    ports:
+      - "127.0.0.1:${NATS_PORT:-4322}:4222"
+    volumes:
+      - nats-data:/data
+
+  # Creates the USERS stream consumed by the demo routes. In production the
+  # stream belongs to the producers or the platform team: Kourrier never
+  # creates streams. `make event` reuses this container to publish an event.
+  nats-init:
+    image: natsio/nats-box:latest
+    depends_on: [nats]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until nats --server nats://nats:4222 account info >/dev/null 2>&1; do echo "waiting for nats..."; sleep 1; done
+        nats --server nats://nats:4222 stream info USERS >/dev/null 2>&1 ||
+          nats --server nats://nats:4222 stream add USERS --subjects 'users.>' --storage file --max-age 168h --defaults
+    volumes:
+      - ./examples/events:/events:ro
+
 volumes:
   redis-data:
+  nats-data:

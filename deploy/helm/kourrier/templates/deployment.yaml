@@ -24,6 +24,9 @@ spec:
         {{- if not .Values.secrets.existingSecret }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         {{- end }}
+        {{- if and (include "kourrier.eventsEnabled" .) (not .Values.events.existingConfigMap) }}
+        checksum/routes: {{ include (print $.Template.BasePath "/routes-configmap.yaml") . | sha256sum }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -61,10 +64,19 @@ spec:
                 name: {{ include "kourrier.fullname" . }}
             - secretRef:
                 name: {{ include "kourrier.secretName" . }}
-          {{- with .Values.extraEnv }}
           env:
+            # Let the Go GC work against the container memory limit instead of
+            # being OOM-killed by it (bursts of events or large payloads).
+            {{- if dig "limits" "memory" "" (.Values.resources | default dict) }}
+            - name: GOMEMLIMIT
+              valueFrom:
+                resourceFieldRef:
+                  resource: limits.memory
+                  divisor: "1"
+            {{- end }}
+            {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- end }}
           startupProbe:
             httpGet:
               path: /readyz
@@ -86,21 +98,44 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
-            - name: tenants
+            - name: config
               mountPath: /etc/kourrier
               readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
-        - name: tenants
-          secret:
-            secretName: {{ include "kourrier.secretName" . }}
-            items:
-              - key: tenants.yaml
-                path: tenants.yaml
-            {{- if not (include "kourrier.runsAPI" .) }}
-            optional: true
-            {{- end }}
+        # Every configuration file is projected into /etc/kourrier, readable
+        # by the fsGroup of podSecurityContext only.
+        - name: config
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: {{ include "kourrier.secretName" . }}
+                  items:
+                    - key: tenants.yaml
+                      path: tenants.yaml
+                  {{- if not (include "kourrier.runsAPI" .) }}
+                  optional: true
+                  {{- end }}
+              {{- if include "kourrier.eventsEnabled" . }}
+              - configMap:
+                  name: {{ include "kourrier.routesConfigMap" . }}
+                  items:
+                    - key: routes.yaml
+                      path: routes.yaml
+              {{- with .Values.events.nats }}
+              {{- if .secretName }}
+              - secret:
+                  name: {{ .secretName }}
+                  items:
+                    {{- range (list .credsKey .nkeyKey .tls.caKey .tls.certKey .tls.keyKey) | compact | uniq }}
+                    - key: {{ . }}
+                      path: nats/{{ . }}
+                    {{- end }}
+              {{- end }}
+              {{- end }}
+              {{- end }}
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi

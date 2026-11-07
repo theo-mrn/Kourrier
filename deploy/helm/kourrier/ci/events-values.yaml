@@ -1,0 +1,21 @@
+# Rendered in CI to cover the event ingress templates.
+prometheusRule:
+  enabled: true
+networkPolicy:
+  enabled: true
+events:
+  routes:
+    apiVersion: kourrier/v1alpha1
+    sources:
+      nats:
+        - { name: users, tenant: yner, stream: USERS, consumer: kourrier }
+    routes:
+      - name: welcome
+        tenant: yner
+        match: { types: [com.yner.user.signed_up] }
+        email: { template: welcome, to: data.email }
+  nats:
+    secretName: kourrier-nats
+    credsKey: kourrier.creds
+    tls:
+      caKey: ca.crt

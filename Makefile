@@ -49,7 +49,7 @@ run: ## Run from source with its own Redis; e-mails are printed in this terminal
 	go run ./cmd/kourrier
 
 .PHONY: up
-up: ## Start Redis and Kourrier in Docker; e-mails go to the console (make logs)
+up: ## Start Redis, NATS and Kourrier in Docker; e-mails go to the console (make logs)
 	docker compose up --build -d --wait
 	@echo "API: http://localhost:$(KOURRIER_PORT)  Metrics: http://localhost:$(KOURRIER_ADMIN_PORT)/metrics"
 	@echo "Send the demo e-mail with 'make send', read it with 'make logs'."
@@ -91,6 +91,23 @@ preview: ## Render a template without sending it and open it (TEMPLATE=, LOCALE=
 	@echo "tmp/preview.html"
 	@open tmp/preview.html 2>/dev/null || xdg-open tmp/preview.html 2>/dev/null || true
 
+.PHONY: event
+event: ## Publish the demo CloudEvent to NATS (routed by examples/routes.yaml)
+	docker compose run --rm nats-init 'nats --server nats://nats:4222 pub users.signed_up \
+	  -H "Content-Type:application/cloudevents+json" "$$(cat /events/user-signed-up.json)"'
+
+.PHONY: event-http
+event-http: ## Push the demo CloudEvent to the HTTP sink (POST /v1/events)
+	@curl -sS -X POST http://localhost:$(KOURRIER_PORT)/v1/events \
+	  -H "Authorization: Bearer $(DEV_KEY)" \
+	  -H "Content-Type: application/cloudevents+json" \
+	  --data-binary @examples/events/user-signed-up.json
+	@echo
+
+.PHONY: routes-check
+routes-check: ## Validate the example routes file
+	go run ./cmd/kourrier routes check -tenants dev/tenants.yaml examples/routes.yaml
+
 .PHONY: docker
 docker: ## Build the container image
 	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
@@ -99,3 +116,4 @@ docker: ## Build the container image
 helm-lint: ## Lint and render the Helm chart
 	helm lint deploy/helm/kourrier
 	helm template kourrier deploy/helm/kourrier >/dev/null
+	helm template kourrier deploy/helm/kourrier -f deploy/helm/kourrier/ci/events-values.yaml >/dev/null
