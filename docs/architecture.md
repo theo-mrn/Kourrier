@@ -1,13 +1,19 @@
 # Architecture
 
-Kourrier est un binaire Go unique ([ADR 001](adr/0001-go-monolithe-modulaire.md)). Redis, le stockage S3 et le fournisseur d'e-mails sont des **dépendances externes**, en dehors du Pod.
+Kourrier est un binaire Go unique ([ADR 001](adr/0001-go-monolithe-modulaire.md)). Redis, le stockage S3, le fournisseur d'e-mails et le broker d'événements sont des **dépendances externes**, en dehors du Pod.
+
+L'architecture est hexagonale : un cœur unique (`submit` → file → workers) et des **adaptateurs d'entrée** interchangeables. Ce sont l'API HTTP, le sink CloudEvents et le consommateur NATS JetStream ([ADR 012](adr/0012-entree-evenementielle-cloudevents.md)). Tous passent par le même service de soumission.
 
 ```mermaid
 flowchart LR
     client["Applications clientes<br/>(ex. yner.fr)"]
+    bus[("NATS JetStream<br/>événements de domaine")]
 
     subgraph pod["Pod Kourrier (binaire Go unique)"]
-        api["API HTTP :8080<br/>auth · validation · idempotence<br/>liste et prévisualisation des templates"]
+        api["API HTTP :8080<br/>/v1/emails · /v1/events · /v1/templates"]
+        cons["Consommateur JetStream"]
+        disp["Dispatcher<br/>routes CEL · backpressure"]
+        submit["submit<br/>validation · template · idempotence"]
         workers["Pool de workers<br/>rendu · rate limit · retries"]
         admin["Admin :9090<br/>/metrics · /livez · /readyz"]
     end
@@ -18,10 +24,15 @@ flowchart LR
     obs["Prometheus · Loki · Grafana"]
 
     client -- "POST /v1/emails → 202" --> api
-    api -- "XADD" --> redis
+    bus -- "pull · ack" --> cons
+    api -- "CloudEvents" --> disp
+    cons --> disp
+    api --> submit
+    disp --> submit
+    submit -- "XADD" --> redis
     redis -- "XREADGROUP" --> workers
     workers -- "GetObject (cache TTL)" --> s3
-    api -. "template existe ? (cache)" .-> s3
+    submit -. "template existe ? (cache)" .-> s3
     workers -- "Send" --> provider
     admin -. scrape .-> obs
     pod -. "logs JSON (stdout)" .-> obs
@@ -62,10 +73,15 @@ sequenceDiagram
 
 | Package | Rôle |
 |---------|------|
-| `cmd/kourrier` | Point d'entrée et CLI (`serve`, `keygen`, `dlq`, `healthcheck`). |
+| `cmd/kourrier` | Point d'entrée et CLI (`serve`, `keygen`, `dlq`, `routes`, `healthcheck`). |
 | `internal/app` | Racine de composition : construit les composants depuis la configuration, gère le cycle de vie et l'arrêt propre. |
 | `internal/config` | Configuration par variables d'environnement `KOURRIER_*`. |
-| `internal/api` | API HTTP publique et serveur d'administration. |
+| `internal/api` | API HTTP publique (`/v1/emails`, sink `/v1/events`) et serveur d'administration. |
+| `internal/submit` | Service de soumission partagé par toutes les entrées : validation, expéditeur, idempotence, statut, mise en file. |
+| `internal/cloudevent` | Parseur CloudEvents 1.0 strict et borné ([ADR 012](adr/0012-entree-evenementielle-cloudevents.md)). |
+| `internal/routing` | Fichier de routes et expressions CEL compilées ([ADR 013](adr/0013-routage-declaratif-cel.md)). |
+| `internal/dispatch` | Événement → e-mails : routage, idempotence par événement, issues, backpressure. |
+| `internal/source/natsjs` | Consommateur NATS JetStream ([ADR 014](adr/0014-nats-jetstream.md)). |
 | `internal/tenant` | Tenants, clés API, expéditeurs autorisés ([ADR 008](adr/0008-authentification-multi-tenant.md)). |
 | `internal/queue` | Interface `Queue` et implémentation Redis Streams ([ADR 006](adr/0006-fiabilite-redis-streams.md)). |
 | `internal/worker` | Pool de workers : rendu, rate limit, envoi, retries. |

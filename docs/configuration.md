@@ -72,6 +72,20 @@ Toute la configuration passe par des variables d'environnement préfixées `KOUR
 | `KOURRIER_MAILER_SMTP_TIMEOUT` | `15s` | Timeout de connexion. |
 | `KOURRIER_MAILER_FILESYSTEM_DIR` | `./tmp/emails` | Dossier de sortie du driver `filesystem`. |
 
+## Entrée événementielle
+
+Active quand `KOURRIER_EVENTS_ROUTES_FILE` est renseigné, dans les modes `all` et `api` ([événements](events.md)).
+
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| `KOURRIER_EVENTS_ROUTES_FILE` | | Fichier de routes (sources et routes). Vide = entrée désactivée, `POST /v1/events` répond `404`. |
+| `KOURRIER_EVENTS_MAX_QUEUE_DEPTH` | `50000` | Pause de l'ingestion au-delà de ce nombre d'e-mails en attente (`ready` + `delayed`). `0` = désactivé. |
+| `KOURRIER_EVENTS_NATS_URL` | `nats://localhost:4222` | Serveur(s) NATS, séparés par des virgules. Utilisé seulement si le fichier déclare des `sources.nats`. |
+| `KOURRIER_EVENTS_NATS_CREDS_FILE` | | Fichier de credentials NATS (JWT + seed). Exclusif avec `_NKEY_FILE`. |
+| `KOURRIER_EVENTS_NATS_NKEY_FILE` | | Fichier de seed NKey. |
+| `KOURRIER_EVENTS_NATS_TLS_CA_FILE` | | CA du serveur NATS. |
+| `KOURRIER_EVENTS_NATS_TLS_CERT_FILE` / `_KEY_FILE` | | Certificat client (mTLS), à fournir ensemble. |
+
 ## AWS SES en production
 
 1. Vérifier le domaine d'envoi dans SES (DKIM, SPF, DMARC) et sortir du sandbox.

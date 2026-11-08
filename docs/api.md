@@ -61,6 +61,20 @@ Idempotent-Replayed: true        (uniquement en cas de rejeu)
 
 Les identifiants sont des UUIDv7 (triés chronologiquement).
 
+## `POST /v1/events`
+
+Sink CloudEvents 1.0 (modes *structured* et *binary*), disponible quand un fichier de routes est configuré. L'événement est évalué avec les routes du tenant de la clé API. La référence complète est dans [events.md](events.md#transport-http--post-v1events).
+
+```json
+{
+  "outcome": "accepted",
+  "emails": [{ "route": "welcome", "id": "0192f1b4-…" }],
+  "errors": []
+}
+```
+
+`outcome` vaut `accepted` ou `ignored` (aucune route, `emails` vide). `replayed: true` sur un e-mail signale un événement déjà reçu : aucun nouvel e-mail n'a été créé. Les identifiants se suivent avec `GET /v1/emails/{id}`.
+
 ## `GET /v1/emails/{id}`
 
 ```json
@@ -139,6 +153,11 @@ Les erreurs suivent la [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) (`appl
 | <a id="idempotency-key-reused"></a>`idempotency-key-reused` | 422 | Clé déjà utilisée avec un corps différent. |
 | <a id="template-not-found"></a>`template-not-found` | 422, 404 | Template inconnu pour cette clé (422 dans un envoi, 404 en prévisualisation). Voir `GET /v1/templates`. |
 | <a id="template-invalid"></a>`template-invalid` | 422 | Template qui ne compile pas, ou qui échoue avec les données fournies. |
+| <a id="not-a-cloudevent"></a>`not-a-cloudevent` | 415 | `POST /v1/events` : ni `application/cloudevents+json`, ni en-têtes `ce-*`. |
+| <a id="unsupported-cloudevent"></a>`unsupported-cloudevent` | 415 | Mode batch, données non JSON ou `specversion` différente de 1.0. |
+| <a id="malformed-cloudevent"></a>`malformed-cloudevent` | 400 | Attribut obligatoire manquant ou invalide. |
+| <a id="event-rejected"></a>`event-rejected` | 422 | Aucune route n'a pu produire d'e-mail (détail par route dans `errors`, champ `routes.<nom>`). |
+| <a id="backpressure"></a>`backpressure` | 503 | File d'e-mails pleine, ingestion en pause. Réessayer après `Retry-After`. |
 | <a id="internal"></a>`internal` | 500 | Erreur interne. |
 | <a id="unavailable"></a>`unavailable` | 503 | Redis indisponible, ou stockage des templates indisponible (liste, prévisualisation). Réessayer après `Retry-After`. |
 

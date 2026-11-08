@@ -1,32 +1,49 @@
 # Kourrier
 
-Microservice d'e-mailing **asynchrone**, **cloud-native** et **agnostique du fournisseur**, écrit en Go.
+**La couche e-mail de votre plate-forme Kubernetes** : asynchrone, cloud-native, auto-hébergée et agnostique du fournisseur, écrite en Go.
 
-Vos applications font un `POST`, reçoivent un `202` en quelques millisecondes, et Kourrier se charge du reste : rendu des templates stockés sur S3, respect du quota d'envoi, retries avec backoff, dead-letter queue, métriques et dashboard Grafana.
+Vos services publient des **événements de domaine** (`user.signed_up`, `order.paid`) au format [CloudEvents](https://cloudevents.io). Kourrier les consomme et en déduit les e-mails à envoyer grâce à des **routes déclaratives** versionnées dans Git. Le code métier ne connaît plus l'e-mail ; ajouter une notification revient à ajouter une route. Pour les envois directs, l'API HTTP reste disponible.
 
 ```
-POST /v1/emails ──► API ──► Redis Streams ──► Workers ──► AWS SES / SMTP
-                     │                          │
-                   202 Accepted          templates S3 (cache)
+Événements (NATS JetStream, POST /v1/events) ──► routes CEL ─┐
+                                                              ├─► Redis Streams ──► Workers ──► SES / SMTP
+API (POST /v1/emails) ────────────────────────────────────────┘                        │
+                                                                              templates S3 (cache)
+```
+
+```yaml
+# routes.yaml
+routes:
+  - name: welcome
+    tenant: yner
+    match:
+      types: [com.yner.user.signed_up]
+      when: data.email_verified
+    email:
+      template: welcome
+      to: data.email
+      locale: data.?locale.orValue("fr")
 ```
 
 ## Fonctionnalités
 
+- **Piloté par les événements** : consommateur NATS JetStream (pull, ack explicite) et sink HTTP CloudEvents. Les routes [CEL](https://cel.dev) (le langage de Kubernetes) sont compilées au démarrage, avec un coût borné, et testables en CI (`kourrier routes test`). Compatible avec le pattern *outbox*. Voir [docs/events.md](docs/events.md).
 - **Asynchrone et fiable** : Redis Streams avec consumer groups, livraison au moins une fois, reprise des jobs d'un Pod mort, retries avec backoff exponentiel, dead-letter queue rejouable.
 - **Agnostique** : drivers `aws-ses`, `smtp`, `console`, `filesystem` derrière une interface unique. Le stockage des templates accepte S3, MinIO, RustFS ou un dossier local.
 - **Sûr par défaut** : le driver par défaut n'envoie rien. Clés API par tenant (seules les empreintes SHA-256 sont stockées), expéditeurs autorisés, en-têtes filtrés, échappement HTML automatique.
-- **Idempotent** : l'en-tête `Idempotency-Key` évite les doublons quand un client renvoie sa requête.
+- **Idempotent** : l'en-tête `Idempotency-Key` côté API et la clé `route + source + id` côté événements évitent les doublons lors des renvois et redélivrances.
 - **Rate limiting distribué** (GCRA sur Redis) : le quota SES est respecté quel que soit le nombre de replicas.
 - **Observabilité native** : métriques Prometheus, logs JSON (adresses masquées), dashboard Grafana et alertes livrés dans le Chart Helm.
-- **Léger** : un binaire, environ 11 Mio de RAM, image distroless non-root d'environ 44 Mo.
+- **Léger** : un binaire statique (environ 40 Mo), image distroless non-root d'environ 53 Mo.
 
 ## Tester en local
 
 Aucun compte AWS, aucune connexion Internet : en local, Kourrier **affiche les e-mails dans la console** au lieu de les envoyer (driver `console`, [ADR 004](docs/adr/0004-abstraction-fournisseur.md)).
 
 ```sh
-make up      # Redis + Kourrier dans Docker (API sur http://localhost:8180)
-make send    # envoie l'e-mail de démonstration « welcome »
+make up      # Redis, NATS et Kourrier dans Docker (API sur http://localhost:8180)
+make send    # envoie l'e-mail de démonstration « welcome » via l'API
+make event   # publie un CloudEvent sur NATS, routé vers le même e-mail
 make logs    # affiche l'e-mail rendu (texte et HTML)
 make down    # arrête tout
 ```
@@ -125,6 +142,7 @@ Toutes les options sont décrites dans [values.yaml](deploy/helm/kourrier/values
 
 ## Documentation
 
+- [Événements et routes](docs/events.md)
 - [Architecture](docs/architecture.md)
 - [Décisions d'architecture (ADRs)](docs/adr/README.md)
 - [API](docs/api.md)
@@ -142,9 +160,14 @@ make help        # toutes les cibles
 ```
 
 ```
-cmd/kourrier/          point d'entrée et CLI (serve, keygen, dlq, healthcheck)
+cmd/kourrier/          point d'entrée et CLI (serve, keygen, dlq, routes, healthcheck)
 internal/app/          racine de composition et cycle de vie
-internal/api/          API HTTP et serveur d'administration
+internal/api/          API HTTP (/v1/emails, /v1/events) et serveur d'administration
+internal/submit/       service de soumission commun à toutes les entrées
+internal/cloudevent/   parseur CloudEvents strict
+internal/routing/      fichier de routes et expressions CEL
+internal/dispatch/     événement → e-mails, idempotence, backpressure
+internal/source/natsjs/ consommateur NATS JetStream
 internal/queue/        file Redis Streams
 internal/worker/       pool de workers
 internal/templates/    rendu et cache des templates
