@@ -59,7 +59,9 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	var (
 		apiServer *http.Server
 		pool      *worker.Pool
-		// background components run until shutdown; an error is fatal.
+		// ingress components (event consumers) stop first at shutdown,
+		// background components with the workers; an error is fatal.
+		ingress    []func(context.Context) error
 		background []func(context.Context) error
 	)
 
@@ -88,23 +90,23 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		logger.Info("tenants loaded", "count", tenants.Len())
 		submitter := submit.New(submit.Deps{
 			Queue:       q,
-			Idempotency: idempotency.NewStore(rdb, cfg.Redis.KeyPrefix, cfg.Idempotency.TTL),
+			Idempotency: idempotency.NewStore(cfg.Redis.KeyPrefix, cfg.Idempotency.TTL),
 			Statuses:    statuses,
 			Templates:   renderer,
 			Metrics:     metrics,
 			Logger:      logger,
 		})
-		ingress, err := newEventIngress(cfg, tenants, submitter, q, metrics, logger)
+		events, err := newEventIngress(cfg, tenants, submitter, q, metrics, logger)
 		if err != nil {
 			return err
 		}
-		background = append(background, ingress.background...)
+		ingress = events.run
 		srv := api.New(api.Deps{
 			Tenants:      tenants,
 			Submitter:    submitter,
 			Statuses:     statuses,
 			Templates:    renderer,
-			Events:       ingress.dispatcher,
+			Events:       events.dispatcher,
 			Metrics:      metrics,
 			Logger:       logger,
 			MaxBodyBytes: cfg.MaxBodyBytes,
@@ -147,7 +149,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 
 	// Lifecycle: servers and workers run until ctx is cancelled, then shut
 	// down in order (stop accepting requests, drain workers).
-	errCh := make(chan error, 2+len(background))
+	errCh := make(chan error, 2+len(ingress)+len(background))
 	serve := func(s *http.Server, name string) {
 		logger.Info("http server listening", "server", name, "addr", s.Addr)
 		if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -159,15 +161,22 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		go serve(apiServer, "api")
 	}
 
+	start := func(wg *sync.WaitGroup, ctx context.Context, fns []func(context.Context) error) {
+		for _, fn := range fns {
+			wg.Go(func() {
+				if err := fn(ctx); err != nil {
+					errCh <- err
+				}
+			})
+		}
+	}
+	ingressCtx, stopIngress := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopIngress()
+	var ingressWG sync.WaitGroup
+	start(&ingressWG, ingressCtx, ingress)
 	workCtx, stopWork := context.WithCancel(context.WithoutCancel(ctx))
 	var wg sync.WaitGroup
-	for _, fn := range background {
-		wg.Go(func() {
-			if err := fn(workCtx); err != nil {
-				errCh <- err
-			}
-		})
-	}
+	start(&wg, workCtx, background)
 	if pool != nil {
 		wg.Go(func() { pool.Run(workCtx) })
 	}
@@ -181,21 +190,31 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		logger.Error("fatal error, shutting down", "error", runErr)
 	}
 
+	// Shutdown order: stop taking new work (HTTP and event consumers, in
+	// parallel), then stop the workers. Event consumers drain the few
+	// messages they already hold; whatever is not acknowledged in time is
+	// redelivered by the broker, and atomic submission (see internal/submit)
+	// makes an interrupted event safe to process again.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
+	stopIngress()
 	if apiServer != nil {
 		if err := apiServer.Shutdown(shutdownCtx); err != nil {
 			logger.Error("api server shutdown", "error", err)
 		}
 	}
-	stopWork()
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-shutdownCtx.Done():
-		logger.Warn("shutdown timeout reached with jobs in flight; they will be redelivered")
+	wait := func(wg *sync.WaitGroup, what string) {
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-shutdownCtx.Done():
+			logger.Warn("shutdown timeout reached with " + what + " in flight; they will be redelivered")
+		}
 	}
+	wait(&ingressWG, "events")
+	stopWork()
+	wait(&wg, "jobs")
 	_ = adminServer.Shutdown(shutdownCtx)
 	logger.Info("kourrier stopped")
 	return runErr

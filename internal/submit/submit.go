@@ -43,20 +43,10 @@ var (
 	ErrUnavailable = errors.New("backend unavailable")
 )
 
-// Enqueuer pushes jobs to the queue.
+// Enqueuer adds a job and its companion keys atomically.
+// *queue.RedisStreams implements it.
 type Enqueuer interface {
-	Enqueue(ctx context.Context, job *queue.Job) error
-}
-
-// IdempotencyStore remembers idempotency keys.
-type IdempotencyStore interface {
-	Reserve(ctx context.Context, scope, key string, rec idempotency.Record) (*idempotency.Record, error)
-	Release(ctx context.Context, scope, key string) error
-}
-
-// StatusStore writes delivery statuses.
-type StatusStore interface {
-	Put(ctx context.Context, st *status.Status) error
+	EnqueueAtomic(ctx context.Context, job *queue.Job, guard *queue.Write, writes ...queue.Write) ([]byte, error)
 }
 
 // TemplateChecker tells whether a template exists and compiles.
@@ -72,8 +62,8 @@ const templateCheckTimeout = 2 * time.Second
 // Service validates and enqueues e-mail requests.
 type Service struct {
 	queue       Enqueuer
-	idempotency IdempotencyStore
-	statuses    StatusStore
+	idempotency *idempotency.Store
+	statuses    *status.Store
 	templates   TemplateChecker
 	metrics     *observability.Metrics
 	logger      *slog.Logger
@@ -83,8 +73,8 @@ type Service struct {
 // Deps groups the collaborators of a Service.
 type Deps struct {
 	Queue       Enqueuer
-	Idempotency IdempotencyStore
-	Statuses    StatusStore
+	Idempotency *idempotency.Store
+	Statuses    *status.Store
 	// Templates enables the template check (ADR 011). Nil disables it.
 	Templates TemplateChecker
 	Metrics   *observability.Metrics
@@ -140,42 +130,49 @@ func (s *Service) Submit(ctx context.Context, r *Request) (Result, error) {
 	}
 
 	jobID := id.New()
-	scope := idempotencyScope(t.ID, r.Origin)
+	now := s.now().UTC()
+	// The "queued" status, the idempotency record and the job are written in
+	// one atomic step: a record never exists without its job, and a retried
+	// request after a lost reply finds the record instead of duplicating the
+	// e-mail. Writing the status before the job is visible also guarantees
+	// that a fast worker's "sent" is never overwritten by "queued".
+	stKey, stVal, stTTL, err := s.statuses.Prepare(&status.Status{
+		ID: jobID, TenantID: t.ID, State: status.Queued, CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		return Result{}, fmt.Errorf("encode status: %w", err)
+	}
+	var guard *queue.Write
+	fp := r.Fingerprint
 	if r.IdempotencyKey != "" {
-		fp := r.Fingerprint
 		if fp == "" {
-			var err error
 			if fp, err = idempotency.Fingerprint(req); err != nil {
 				return Result{}, fmt.Errorf("fingerprint request: %w", err)
 			}
 		}
-		existing, err := s.idempotency.Reserve(ctx, scope, r.IdempotencyKey, idempotency.Record{JobID: jobID, Fingerprint: fp})
+		key, val, ttl, err := s.idempotency.Prepare(idempotencyScope(t.ID, r.Origin), r.IdempotencyKey,
+			idempotency.Record{JobID: jobID, Fingerprint: fp})
 		if err != nil {
-			return Result{}, fmt.Errorf("%w: reserve idempotency key: %w", ErrUnavailable, err)
+			return Result{}, fmt.Errorf("encode idempotency record: %w", err)
 		}
-		if existing != nil {
-			if existing.Fingerprint != fp {
-				return Result{}, ErrIdempotencyConflict
-			}
-			s.metrics.IdempotentReplays.WithLabelValues(t.ID).Inc()
-			return Result{JobID: existing.JobID, Replayed: true}, nil
-		}
+		guard = &queue.Write{Key: key, Value: val, TTL: ttl}
 	}
 
-	now := s.now().UTC()
-	// The status is written before the job is enqueued so that a fast worker
-	// can never have its "sent" status overwritten by "queued".
-	err := s.statuses.Put(ctx, &status.Status{ID: jobID, TenantID: t.ID, State: status.Queued, CreatedAt: now, UpdatedAt: now})
-	if err == nil {
-		err = s.queue.Enqueue(ctx, &queue.Job{ID: jobID, TenantID: t.ID, EnqueuedAt: now, Request: *req})
-	}
+	prev, err := s.queue.EnqueueAtomic(ctx, &queue.Job{ID: jobID, TenantID: t.ID, EnqueuedAt: now, Request: *req},
+		guard, queue.Write{Key: stKey, Value: stVal, TTL: stTTL})
 	if err != nil {
-		if r.IdempotencyKey != "" {
-			if relErr := s.idempotency.Release(context.WithoutCancel(ctx), scope, r.IdempotencyKey); relErr != nil {
-				s.logger.ErrorContext(ctx, "failed to release idempotency key", "error", relErr)
-			}
+		return Result{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	if prev != nil {
+		existing, err := idempotency.Decode(prev)
+		if err != nil {
+			return Result{}, err
 		}
-		return Result{}, fmt.Errorf("%w: enqueue job: %w", ErrUnavailable, err)
+		if existing.Fingerprint != fp {
+			return Result{}, ErrIdempotencyConflict
+		}
+		s.metrics.IdempotentReplays.WithLabelValues(t.ID).Inc()
+		return Result{JobID: existing.JobID, Replayed: true}, nil
 	}
 
 	s.metrics.JobsEnqueued.WithLabelValues(t.ID).Inc()

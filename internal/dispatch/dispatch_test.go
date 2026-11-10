@@ -78,7 +78,7 @@ func newFixture(t *testing.T) *fixture {
 		Router: cfg.Router,
 		Submitter: submit.New(submit.Deps{
 			Queue:       q,
-			Idempotency: idempotency.NewStore(rdb, "kourrier", time.Hour),
+			Idempotency: idempotency.NewStore("kourrier", time.Hour),
 			Statuses:    status.NewStore(rdb, "kourrier", time.Hour),
 			Metrics:     metrics,
 			Logger:      logger,

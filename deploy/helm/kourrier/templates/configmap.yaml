@@ -56,7 +56,7 @@ data:
   KOURRIER_MAILER_FILESYSTEM_DIR: /tmp/emails
   {{- if include "kourrier.eventsEnabled" . }}
   KOURRIER_EVENTS_ROUTES_FILE: /etc/kourrier/routes.yaml
-  KOURRIER_EVENTS_MAX_QUEUE_DEPTH: {{ .Values.events.maxQueueDepth | quote }}
+  KOURRIER_EVENTS_MAX_QUEUE_DEPTH: {{ .Values.events.maxQueueDepth | int64 | quote }}
   KOURRIER_EVENTS_NATS_URL: {{ .Values.events.nats.url | quote }}
   {{- with .Values.events.nats.credsKey }}
   KOURRIER_EVENTS_NATS_CREDS_FILE: /etc/kourrier/nats/{{ . }}

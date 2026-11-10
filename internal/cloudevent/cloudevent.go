@@ -47,9 +47,9 @@ var (
 )
 
 // extensionName is the format mandated by the specification for attribute
-// names (lower-case letters and digits); the 20 character limit is a SHOULD
-// that Kourrier enforces.
-var extensionName = regexp.MustCompile(`^[a-z0-9]{1,20}$`)
+// names (lower-case letters and digits). The specification only recommends
+// 20 characters at most, so longer names are accepted up to a safety cap.
+var extensionName = regexp.MustCompile(`^[a-z0-9]{1,64}$`)
 
 // Event is a validated CloudEvent whose data, if any, is JSON.
 type Event struct {

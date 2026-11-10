@@ -62,6 +62,7 @@ sources:
       stream: ORDERS                   # doit exister : Kourrier ne crée jamais de stream
       consumer: kourrier               # consommateur durable
       filter_subjects: ["orders.>"]    # optionnel
+      deliver_policy: new              # optionnel : new (défaut) ou all (rejoue l'historique du stream)
       ack_wait: 30s                    # optionnel, minimum 15s
       max_deliver: 0                   # optionnel, 0 = illimité (recommandé)
       max_ack_pending: 0               # optionnel, 0 = 256
@@ -202,6 +203,10 @@ Acquittements :
 | `retry` (Redis) | `NakWithDelay` | 1 s, 2 s, 4 s… jusqu'à 1 min |
 | `retry` (backpressure) | `NakWithDelay` | 30 s |
 
+**Politique de livraison.** Par défaut (`deliver_policy: new`), un consommateur créé par Kourrier ne reçoit que les événements publiés **après** sa création. Ajouter une source sur un stream existant n'envoie donc pas un e-mail par événement historique (des « bienvenue » à tous les anciens utilisateurs, par exemple). `deliver_policy: all` rejoue ce que le stream retient : à réserver à un démarrage contrôlé. Si le consommateur est supprimé, Kourrier le recrée en `new` : les événements publiés pendant la coupure ne sont pas rejoués.
+
+Kourrier ne garde que 4 messages en mémoire tampon par source et prolonge l'échéance d'acquittement (`InProgress`) au début de chaque traitement. Un message n'est donc pas redélivré à un autre Pod pendant qu'il attend son tour.
+
 Une panne de NATS n'empêche ni le démarrage ni la readiness du Pod : la connexion est retentée indéfiniment en tâche de fond (`kourrier_event_source_up` passe à `0`).
 
 ## Pattern outbox
@@ -225,6 +230,7 @@ Exemple de ligne d'outbox :
 - **Même événement, même identité.** Un événement redélivré après une modification des routes garde ses e-mails déjà créés : l'empreinte d'idempotence est l'identité de l'événement, pas le contenu de l'e-mail.
 - **Pas d'ordre** : deux événements peuvent produire des e-mails dans un ordre différent de leur publication.
 - **Rien n'est acquitté avant d'être persistant** : un événement n'est acquitté qu'après l'écriture de ses e-mails dans Redis (AOF requis, voir l'[ADR 002](adr/0002-file-asynchrone-redis.md)).
+- **Soumission atomique** : l'enregistrement d'idempotence, le statut `queued` et le job sont écrits par un seul script Lua. Un enregistrement d'idempotence n'existe jamais sans son job. Un crash ou une réponse perdue au milieu de la soumission ne peut donc ni perdre l'e-mail (faux « déjà envoyé ») ni le dupliquer (nouvel essai après un succès invisible).
 
 ## Observabilité
 
@@ -256,7 +262,7 @@ Logs (JSON) : `event dispatched`, `event ignored` (niveau debug), `event rejecte
 
 Elles sont listées pour être traitées, pas cachées.
 
-1. **Traitement séquentiel par source et par Pod** (environ 1 ms par événement, l'aller-retour Redis). Le débit se gagne avec des réplicas, puisque JetStream répartit les messages d'un consommateur durable entre les Pods. Un traitement parallèle par source reste à faire si le besoin se confirme.
+1. **Traitement séquentiel par source et par Pod** (environ 18 µs de CPU pour le routage, plus un aller-retour Redis par e-mail). Le débit se gagne avec des réplicas, puisque JetStream répartit les messages d'un consommateur durable entre les Pods. Un traitement parallèle par source reste à faire si le besoin se confirme.
 2. **Knative Eventing** n'envoie pas d'en-tête `Authorization` aux abonnés : il faudrait supporter l'identité OIDC de Knative (audience vérifiée). En attendant, passez par NATS ou un relais.
 3. **Kafka, RabbitMQ, SQS** ne sont pas encore consommés directement : un adaptateur `internal/source/<broker>` s'ajoute sans toucher au routage.
 4. **TTL d'idempotence** (24 h) : voir [Garanties](#garanties).

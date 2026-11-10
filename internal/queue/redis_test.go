@@ -185,3 +185,43 @@ func TestUndecodablePayloadGoesToDeadLetter(t *testing.T) {
 		t.Fatalf("stats = %+v", s)
 	}
 }
+
+func TestEnqueueAtomic(t *testing.T) {
+	mr, rdb := setup(t)
+	q := newTestQueue(t, "c1", rdb)
+	ctx := context.Background()
+	guard := &Write{Key: "{kourrier}:idem:k", Value: []byte("record-1"), TTL: time.Hour}
+	extra := Write{Key: "{kourrier}:status:1", Value: []byte("queued"), TTL: 2 * time.Hour}
+
+	prev, err := q.EnqueueAtomic(ctx, job("1"), guard, extra)
+	if err != nil || prev != nil {
+		t.Fatalf("first EnqueueAtomic() = %q, %v", prev, err)
+	}
+	if v, _ := mr.Get(extra.Key); v != "queued" || mr.TTL(extra.Key) != 2*time.Hour || mr.TTL(guard.Key) != time.Hour {
+		t.Fatalf("companion keys not written with their TTL: %q", v)
+	}
+
+	// Same guard: the existing record is returned and nothing is written.
+	prev, err = q.EnqueueAtomic(ctx, job("2"), &Write{Key: guard.Key, Value: []byte("record-2"), TTL: time.Hour},
+		Write{Key: "{kourrier}:status:2", Value: []byte("queued"), TTL: time.Hour})
+	if err != nil || string(prev) != "record-1" {
+		t.Fatalf("guarded EnqueueAtomic() = %q, %v", prev, err)
+	}
+	if mr.Exists("{kourrier}:status:2") {
+		t.Fatal("a guarded no-op must not write companion keys")
+	}
+	if s := stats(t, q); s.Ready != 1 {
+		t.Fatalf("ready = %d, want 1", s.Ready)
+	}
+
+	// Without guard the job is always enqueued.
+	if _, err := q.EnqueueAtomic(ctx, job("3"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if s := stats(t, q); s.Ready != 2 {
+		t.Fatalf("ready = %d, want 2", s.Ready)
+	}
+	if _, err := q.EnqueueAtomic(ctx, job("4"), nil, Write{Key: "{kourrier}:x", Value: []byte("v")}); err == nil {
+		t.Fatal("a key without TTL must be refused")
+	}
+}

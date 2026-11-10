@@ -99,6 +99,15 @@ routes:
 		}
 	})
 	waitReady(t, "http://"+cfg.AdminAddr+"/readyz")
+	// The consumer only receives events published after its creation.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := js.Consumer(context.Background(), "USERS", "kourrier"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("consumer not created")
+		}
+	}
 
 	if _, err := js.PublishMsg(context.Background(), &nats.Msg{
 		Subject: "users.created",

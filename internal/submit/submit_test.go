@@ -39,7 +39,7 @@ func newService(t *testing.T) (*Service, *queue.RedisStreams, *status.Store) {
 	}
 	statuses := status.NewStore(rdb, "kourrier", time.Hour)
 	return New(Deps{
-		Queue: q, Idempotency: idempotency.NewStore(rdb, "kourrier", time.Hour), Statuses: statuses,
+		Queue: q, Idempotency: idempotency.NewStore("kourrier", time.Hour), Statuses: statuses,
 		Metrics: observability.NewMetrics("test"), Logger: logger,
 	}), q, statuses
 }

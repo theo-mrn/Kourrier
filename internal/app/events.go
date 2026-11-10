@@ -25,7 +25,8 @@ type eventIngress struct {
 	// dispatcher is nil when no routes file is configured, which disables
 	// POST /v1/events.
 	dispatcher *dispatch.Dispatcher
-	background []func(context.Context) error
+	// run lists the components to start (backpressure gate, consumers).
+	run []func(context.Context) error
 }
 
 func newEventIngress(cfg *config.Config, tenants *tenant.Registry, submitter *submit.Service, q queue.Queue,
@@ -45,7 +46,7 @@ func newEventIngress(cfg *config.Config, tenants *tenant.Registry, submitter *su
 	if cfg.Events.MaxQueueDepth > 0 {
 		g := dispatch.NewDepthGate(q.Stats, cfg.Events.MaxQueueDepth, gateInterval, metrics, logger)
 		gate = g
-		in.background = append(in.background, func(ctx context.Context) error { g.Run(ctx); return nil })
+		in.run = append(in.run, func(ctx context.Context) error { g.Run(ctx); return nil })
 	}
 	in.dispatcher = dispatch.New(dispatch.Deps{
 		Router: routes.Router, Submitter: submitter, Gate: gate, Metrics: metrics, Logger: logger,
@@ -61,7 +62,7 @@ func newEventIngress(cfg *config.Config, tenants *tenant.Registry, submitter *su
 		if err != nil {
 			return in, err
 		}
-		in.background = append(in.background, consumer.Run)
+		in.run = append(in.run, consumer.Run)
 	}
 	return in, nil
 }

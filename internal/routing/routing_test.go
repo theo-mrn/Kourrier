@@ -230,6 +230,26 @@ routes:
 	}
 }
 
+func TestTypedExpressions(t *testing.T) {
+	// Statically typed results must be accepted, not only dyn.
+	cfg := mustParse(t, `
+apiVersion: kourrier/v1alpha1
+routes:
+  - name: list
+    tenant: shop
+    match: { types: [t] }
+    email: { template: x, to: '["a@b.fr", "c@d.fr"]', data: '{"a": data.x.lowerAscii()}' }
+  - name: object
+    tenant: shop
+    match: { types: [t] }
+    email: { template: x, to: '{"email": "a@b.fr"}' }
+`)
+	results, _ := cfg.Router.Route("shop", event(t, "t", "/s", `{"x": "ABC"}`))
+	if len(results) != 2 || results[0].Err != nil || len(results[0].Request.To) != 2 || results[0].Request.Template.Data["a"] != "abc" {
+		t.Fatalf("results = %+v", results)
+	}
+}
+
 func TestCostLimit(t *testing.T) {
 	cfg := mustParse(t, `
 apiVersion: kourrier/v1alpha1
@@ -289,6 +309,13 @@ sources:
   nats:
     - { name: s, tenant: shop, stream: "a.b", consumer: "", ack_wait: 10ms, bind: true, max_deliver: 3 }
 `, "stream: must match|consumer: must match|ack_wait|managed outside"},
+		{"duplicate sources", `
+apiVersion: kourrier/v1alpha1
+sources:
+  nats:
+    - { name: s, tenant: shop, stream: S, consumer: c }
+    - { name: s, tenant: nosender, stream: S, consumer: c }
+`, "duplicate source name|already used by source"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

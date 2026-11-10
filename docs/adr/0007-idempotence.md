@@ -13,7 +13,7 @@ Une application cliente qui subit un timeout réseau ne sait pas si sa requête 
 - La clé est réservée atomiquement (`SET NX GET`, TTL de 24 h par défaut), avec un espace de noms par tenant.
 - Une seconde requête avec la même clé et le **même corps** reçoit la réponse d'origine (même `id`, en-tête `Idempotent-Replayed: true`), sans nouvelle mise en file.
 - La même clé avec un **corps différent** renvoie `422`, pour éviter qu'une erreur côté client passe inaperçue.
-- Si la mise en file échoue après la réservation, la clé est libérée : le client peut réessayer.
+- La réservation de la clé, le statut et la mise en file forment une seule opération atomique (script Lua, voir l'[ADR 012](0012-entree-evenementielle-cloudevents.md)). Une erreur ne laisse jamais une clé sans job : le client peut réessayer, et un nouvel essai après une réponse perdue retrouve le job d'origine.
 - L'empreinte du corps est un SHA-256 du JSON canonique (clés triées).
 
 ## Conséquences

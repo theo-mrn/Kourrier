@@ -37,9 +37,10 @@ import (
 // Defaults applied to consumers created by Kourrier.
 const (
 	defaultMaxAckPending = 256
-	// pullBatch bounds the messages buffered client-side; they are dropped on
-	// a hard stop and redelivered after AckWait, so the batch stays small.
-	pullBatch = 32
+	// pullBatch bounds the messages buffered client-side. AckWait runs from
+	// delivery, not from the start of processing: a small batch keeps the
+	// last buffered message well within AckWait even when Redis is slow.
+	pullBatch = 4
 	// handleTimeout bounds the processing of one message, including during
 	// shutdown. It stays below the minimum AckWait accepted by the routes
 	// file (15s), so a message is never redelivered while being processed.
@@ -147,11 +148,10 @@ func (c *Consumer) connect() (*nats.Conn, error) {
 			c.connected.Store(false)
 			c.refreshAll()
 		}),
-		nats.ReconnectHandler(func(nc *nats.Conn) {
-			c.logger.Info("nats connected", "server", nc.ConnectedUrlRedacted())
-			c.connected.Store(true)
-			c.refreshAll()
-		}),
+		// With RetryOnFailedConnect, the first successful connection calls the
+		// connect handler, later ones the reconnect handler.
+		nats.ConnectHandler(c.onConnect),
+		nats.ReconnectHandler(c.onConnect),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
 			c.logger.Warn("nats asynchronous error", "error", err)
 		}),
@@ -179,6 +179,12 @@ func (c *Consumer) connect() (*nats.Conn, error) {
 	return nc, nil
 }
 
+func (c *Consumer) onConnect(nc *nats.Conn) {
+	c.logger.Info("nats connected", "server", nc.ConnectedUrlRedacted())
+	c.connected.Store(true)
+	c.refreshAll()
+}
+
 // refresh publishes kourrier_event_source_up: a source is up when it is
 // consuming and the connection is established.
 func (c *Consumer) refresh(source string) {
@@ -201,14 +207,15 @@ func (c *Consumer) setConsuming(source string, v bool) {
 }
 
 // runSource keeps one source consuming: it (re)binds the consumer with a
-// capped exponential backoff whenever it is missing or gets deleted.
+// capped exponential backoff whenever it is missing, deleted, or when the
+// client stops consuming on its own.
 func (c *Consumer) runSource(ctx context.Context, js jetstream.JetStream, src routing.NATSSource) {
 	log := c.logger.With("source", src.Name, "stream", src.Stream, "consumer", src.Consumer)
 	t, _ := c.tenants.Get(src.Tenant)
 	backoff := time.Second
 	for ctx.Err() == nil {
-		failed := make(chan error, 1)
-		cc, err := c.consume(ctx, js, src, t, log, failed)
+		sig := signals{failed: make(chan error, 1), suspect: make(chan struct{}, 1)}
+		cons, cc, err := c.consume(ctx, js, src, t, log, sig)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -222,25 +229,56 @@ func (c *Consumer) runSource(ctx context.Context, js jetstream.JetStream, src ro
 		c.setConsuming(src.Name, true)
 		log.Info("consuming events")
 
-		select {
-		case <-ctx.Done():
+		reason := c.watch(ctx, cons, cc, sig)
+		if ctx.Err() != nil {
+			// Messages already received are processed and acknowledged.
 			cc.Drain()
 			<-cc.Closed()
 			c.setConsuming(src.Name, false)
 			log.Info("stopped consuming events")
 			return
-		case err := <-failed:
-			cc.Stop()
-			<-cc.Closed()
-			c.setConsuming(src.Name, false)
-			log.Error("consumer lost, rebinding", "error", err)
+		}
+		cc.Stop()
+		<-cc.Closed()
+		c.setConsuming(src.Name, false)
+		log.Error("consumer lost, rebinding", "reason", reason)
+	}
+}
+
+// signals carries what the consume error handler observed.
+type signals struct {
+	failed  chan error    // terminal: the consumer was deleted
+	suspect chan struct{} // missing heartbeats or no responders: maybe gone
+}
+
+// watch blocks until ctx is done or the consumption must be restarted, and
+// returns why.
+func (c *Consumer) watch(ctx context.Context, cons jetstream.Consumer, cc jetstream.ConsumeContext, sig signals) string {
+	for {
+		select {
+		case <-ctx.Done():
+			return "shutdown"
+		case err := <-sig.failed:
+			return err.Error()
+		case <-cc.Closed():
+			// The client gave up on its own (e.g. a bad request error).
+			return "consumption stopped by the client"
+		case <-sig.suspect:
+			// A consumer deleted while the connection was down only shows up
+			// as missing heartbeats: check that it still exists.
+			ictx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			_, err := cons.Info(ictx)
+			cancel()
+			if errors.Is(err, jetstream.ErrConsumerNotFound) {
+				return "consumer not found"
+			}
 		}
 	}
 }
 
 func (c *Consumer) consume(ctx context.Context, js jetstream.JetStream, src routing.NATSSource, t *tenant.Tenant,
-	log *slog.Logger, failed chan<- error,
-) (jetstream.ConsumeContext, error) {
+	log *slog.Logger, sig signals,
+) (jetstream.Consumer, jetstream.ConsumeContext, error) {
 	setupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -254,25 +292,37 @@ func (c *Consumer) consume(ctx context.Context, js jetstream.JetStream, src rout
 		cons, err = js.CreateOrUpdateConsumer(setupCtx, src.Stream, consumerConfig(src))
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return cons.Consume(
+	notify := func(ch chan struct{}) {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	cc, err := cons.Consume(
 		func(msg jetstream.Msg) { c.handle(ctx, src, t, log, msg) },
 		jetstream.PullMaxMessages(pullBatch),
 		jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
-			// Terminal errors require a rebind; the others (missing
-			// heartbeats during a reconnection) are handled by the client.
-			if errors.Is(err, jetstream.ErrConsumerDeleted) || errors.Is(err, jetstream.ErrConsumerNotFound) {
+			switch {
+			case errors.Is(err, jetstream.ErrConsumerDeleted):
 				select {
-				case failed <- err:
+				case sig.failed <- err:
 				default:
 				}
-				return
+			case errors.Is(err, jetstream.ErrNoHeartbeat) || errors.Is(err, nats.ErrNoResponders):
+				log.Warn("consume error", "error", err)
+				notify(sig.suspect)
+			default:
+				log.Warn("consume error", "error", err)
 			}
-			log.Warn("consume error", "error", err)
 		}),
 	)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cons, cc, nil
 }
 
 func consumerConfig(src routing.NATSSource) jetstream.ConsumerConfig {
@@ -284,6 +334,10 @@ func consumerConfig(src routing.NATSSource) jetstream.ConsumerConfig {
 		MaxDeliver:     src.MaxDeliver,
 		MaxAckPending:  src.MaxAckPending,
 		FilterSubjects: src.FilterSubjects,
+		DeliverPolicy:  jetstream.DeliverNewPolicy,
+	}
+	if src.DeliverPolicy == routing.DeliverAll {
+		cfg.DeliverPolicy = jetstream.DeliverAllPolicy
 	}
 	if cfg.MaxDeliver == 0 {
 		// Transient failures (Redis down) must not lose events; poison
@@ -301,6 +355,11 @@ func consumerConfig(src routing.NATSSource) jetstream.ConsumerConfig {
 func (c *Consumer) handle(ctx context.Context, src routing.NATSSource, t *tenant.Tenant, log *slog.Logger, msg jetstream.Msg) {
 	hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), handleTimeout)
 	defer cancel()
+	// Restart the AckWait timer: the message may have waited in the client
+	// buffer behind slower ones.
+	if err := msg.InProgress(); err != nil {
+		log.DebugContext(hctx, "cannot extend the ack deadline", "error", err)
+	}
 
 	e, err := cloudevent.ParseNATS(msg.Headers(), msg.Data())
 	if err != nil {

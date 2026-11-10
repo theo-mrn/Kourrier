@@ -104,7 +104,7 @@ func newFixtureWith(t *testing.T, store storage.Provider, routes string) *fixtur
 	renderer := templates.NewRenderer(store, templates.Options{DefaultLocale: "en"})
 	submitter := submit.New(submit.Deps{
 		Queue:       q,
-		Idempotency: idempotency.NewStore(rdb, "kourrier", time.Hour),
+		Idempotency: idempotency.NewStore("kourrier", time.Hour),
 		Statuses:    statuses,
 		Templates:   renderer,
 		Metrics:     metrics,

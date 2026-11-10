@@ -117,6 +117,68 @@ func (q *RedisStreams) Enqueue(ctx context.Context, job *Job) error {
 	return nil
 }
 
+// Write is a key written atomically with a job by EnqueueAtomic.
+type Write struct {
+	Key   string
+	Value []byte
+	TTL   time.Duration
+}
+
+// enqueueAtomicScript writes the extra keys and adds the job in one step.
+// With a guard (ARGV[2] = "1"), KEYS[2] is a SET NX: when it already exists,
+// its value is returned and nothing is written.
+var enqueueAtomicScript = redis.NewScript(`
+if ARGV[2] == '1' then
+  local prev = redis.call('GET', KEYS[2])
+  if prev then return prev end
+end
+local argi = 3
+for i = 2, #KEYS do
+  redis.call('SET', KEYS[i], ARGV[argi], 'PX', ARGV[argi + 1])
+  argi = argi + 2
+end
+redis.call('XADD', KEYS[1], '*', 'job', ARGV[1])
+return false
+`)
+
+// EnqueueAtomic adds job and writes the given keys atomically. When guard is
+// not nil, the operation only happens if guard.Key does not exist yet;
+// otherwise the current value of guard.Key is returned and nothing changes.
+//
+// Atomicity is what makes idempotency sound: a guard (idempotency record)
+// can never exist without its job, whatever fails in between (lost reply,
+// timeout, crash). Every key must share the queue's hash tag so that the
+// script stays valid on Redis Cluster.
+func (q *RedisStreams) EnqueueAtomic(ctx context.Context, job *Job, guard *Write, writes ...Write) ([]byte, error) {
+	payload, err := json.Marshal(job)
+	if err != nil {
+		return nil, fmt.Errorf("queue: encode job: %w", err)
+	}
+	keys := []string{q.stream}
+	args := []any{payload, "0"}
+	all := writes
+	if guard != nil {
+		args[1] = "1"
+		all = append([]Write{*guard}, writes...)
+	}
+	for _, w := range all {
+		ttl := w.TTL.Milliseconds()
+		if ttl <= 0 {
+			return nil, fmt.Errorf("queue: key %q needs a positive TTL", w.Key)
+		}
+		keys = append(keys, w.Key)
+		args = append(args, w.Value, ttl)
+	}
+	prev, err := enqueueAtomicScript.Run(ctx, q.rdb, keys, args...).Text()
+	if errors.Is(err, redis.Nil) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("queue: enqueue: %w", err)
+	}
+	return []byte(prev), nil
+}
+
 func (q *RedisStreams) Receive(ctx context.Context) (*Delivery, error) {
 	if d, err := q.reclaim(ctx); d != nil || err != nil {
 		return d, err

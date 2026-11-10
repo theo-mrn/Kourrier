@@ -4,15 +4,11 @@
 package idempotency
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
-
-	"github.com/redis/go-redis/v9"
 )
 
 // MaxKeyLength bounds the Idempotency-Key header.
@@ -26,46 +22,37 @@ type Record struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
-// Store keeps idempotency records in Redis for a fixed TTL.
+// Store describes how idempotency records are kept in Redis: key layout
+// (in the queue's hash tag) and retention.
 type Store struct {
-	rdb    redis.UniversalClient
 	prefix string
 	ttl    time.Duration
 }
 
 // NewStore creates a Store. Keys are namespaced per tenant.
-func NewStore(rdb redis.UniversalClient, prefix string, ttl time.Duration) *Store {
-	return &Store{rdb: rdb, prefix: "{" + prefix + "}:idem:", ttl: ttl}
+func NewStore(prefix string, ttl time.Duration) *Store {
+	return &Store{prefix: "{" + prefix + "}:idem:", ttl: ttl}
 }
 
-// Reserve atomically claims key for rec within scope (a tenant ID, or a
-// tenant-derived namespace). If the key was already claimed, the
-// existing record is returned and nothing is written.
-func (s *Store) Reserve(ctx context.Context, scope, key string, rec Record) (*Record, error) {
-	payload, err := json.Marshal(rec)
+// Prepare returns the Redis key, value and TTL that record rec for key
+// within scope (a tenant ID, or a tenant-derived namespace). The record is
+// written by queue.RedisStreams.EnqueueAtomic, together with the job, so that
+// a record never exists without its job.
+func (s *Store) Prepare(scope, key string, rec Record) (redisKey string, value []byte, ttl time.Duration, err error) {
+	value, err = json.Marshal(rec)
 	if err != nil {
-		return nil, err
+		return "", nil, 0, err
 	}
-	redisKey := s.redisKey(scope, key)
-	// SET NX GET returns the previous value when the key exists (Redis 7+).
-	prev, err := s.rdb.SetArgs(ctx, redisKey, payload, redis.SetArgs{Mode: "NX", Get: true, TTL: s.ttl}).Result()
-	if errors.Is(err, redis.Nil) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("idempotency: reserve: %w", err)
-	}
-	var existing Record
-	if err := json.Unmarshal([]byte(prev), &existing); err != nil {
+	return s.redisKey(scope, key), value, s.ttl, nil
+}
+
+// Decode parses a stored record.
+func Decode(value []byte) (*Record, error) {
+	var rec Record
+	if err := json.Unmarshal(value, &rec); err != nil {
 		return nil, fmt.Errorf("idempotency: decode: %w", err)
 	}
-	return &existing, nil
-}
-
-// Release forgets key, so the request can be retried after a failure that
-// happened before the job was enqueued.
-func (s *Store) Release(ctx context.Context, scope, key string) error {
-	return s.rdb.Del(ctx, s.redisKey(scope, key)).Err()
+	return &rec, nil
 }
 
 // The client key is hashed so that arbitrary header values make safe,

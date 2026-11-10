@@ -56,11 +56,20 @@ type NATSSource struct {
 	// Bind makes Kourrier use an existing consumer instead of creating or
 	// updating it, for setups where consumers are managed declaratively
 	// (NACK, Terraform) and Kourrier has no permission to create them.
-	Bind          bool
+	Bind bool
+	// DeliverPolicy is "new" (default: only events published after the
+	// consumer is created) or "all" (replay what the stream retains).
+	DeliverPolicy string
 	AckWait       time.Duration
 	MaxDeliver    int
 	MaxAckPending int
 }
+
+// Deliver policies of a NATS source.
+const (
+	DeliverNew = "new"
+	DeliverAll = "all"
+)
 
 // Tenants looks tenants up by ID. *tenant.Registry implements it.
 type Tenants interface {
@@ -84,6 +93,7 @@ type natsSchema struct {
 	Consumer       string        `yaml:"consumer"`
 	FilterSubjects []string      `yaml:"filter_subjects"`
 	Bind           bool          `yaml:"bind"`
+	DeliverPolicy  string        `yaml:"deliver_policy"`
 	AckWait        time.Duration `yaml:"ack_wait"`
 	MaxDeliver     int           `yaml:"max_deliver"`
 	MaxAckPending  int           `yaml:"max_ack_pending"`
@@ -136,8 +146,21 @@ func Parse(data []byte, tenants Tenants) (*Config, error) {
 	}
 	v := &validator{tenants: tenants}
 	cfg := &Config{}
+	sourceNames := make(map[string]bool, len(f.Sources.NATS))
+	consumers := make(map[string]string, len(f.Sources.NATS))
 	for i, s := range f.Sources.NATS {
-		if src, ok := v.natsSource(fmt.Sprintf("sources.nats[%d]", i), s); ok {
+		field := fmt.Sprintf("sources.nats[%d]", i)
+		// Two sources sharing a durable consumer would split its messages
+		// between two tenants at random.
+		if sourceNames[s.Name] {
+			v.errorf(field+".name", "duplicate source name %q", s.Name)
+		}
+		sourceNames[s.Name] = true
+		if other, dup := consumers[s.Stream+"/"+s.Consumer]; dup {
+			v.errorf(field, "stream %q and consumer %q are already used by source %q", s.Stream, s.Consumer, other)
+		}
+		consumers[s.Stream+"/"+s.Consumer] = s.Name
+		if src, ok := v.natsSource(field, s); ok {
 			cfg.NATS = append(cfg.NATS, src)
 		}
 	}
@@ -212,14 +235,22 @@ func (v *validator) natsSource(field string, s natsSchema) (NATSSource, bool) {
 	if s.AckWait == 0 {
 		s.AckWait = defaultAckWait
 	}
+	if s.DeliverPolicy == "" {
+		// Never replay a stream's history by default: that would send an
+		// e-mail for every past event (e.g. welcome mails to every user).
+		s.DeliverPolicy = DeliverNew
+	}
+	if s.DeliverPolicy != DeliverNew && s.DeliverPolicy != DeliverAll {
+		v.errorf(field+".deliver_policy", "must be %q or %q", DeliverNew, DeliverAll)
+	}
 	if s.AckWait < minAckWait {
 		v.errorf(field+".ack_wait", "must be at least %s", minAckWait)
 	}
 	if s.MaxDeliver < 0 || s.MaxAckPending < 0 {
 		v.errorf(field, "max_deliver and max_ack_pending must be >= 0 (0 keeps the default)")
 	}
-	if s.Bind && (len(s.FilterSubjects) > 0 || s.MaxDeliver != 0 || s.MaxAckPending != 0) {
-		v.errorf(field, "filter_subjects, max_deliver and max_ack_pending are managed outside Kourrier when bind is true")
+	if s.Bind && (len(s.FilterSubjects) > 0 || s.MaxDeliver != 0 || s.MaxAckPending != 0 || s.DeliverPolicy != DeliverNew) {
+		v.errorf(field, "filter_subjects, deliver_policy, max_deliver and max_ack_pending are managed outside Kourrier when bind is true")
 	}
 	return NATSSource(s), len(v.errs) == n
 }

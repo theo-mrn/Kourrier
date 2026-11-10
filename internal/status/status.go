@@ -54,16 +54,26 @@ func NewStore(rdb redis.UniversalClient, prefix string, ttl time.Duration) *Stor
 	return &Store{rdb: rdb, prefix: "{" + prefix + "}:status:", ttl: ttl}
 }
 
-// Put writes s, replacing any previous status for the same ID.
-func (s *Store) Put(ctx context.Context, st *Status) error {
+// Prepare returns the Redis key, value and TTL of st, for writers that must
+// store it atomically with other keys (queue.RedisStreams.EnqueueAtomic).
+func (s *Store) Prepare(st *Status) (key string, value []byte, ttl time.Duration, err error) {
 	if st.UpdatedAt.IsZero() {
 		st.UpdatedAt = time.Now().UTC()
 	}
-	payload, err := json.Marshal(stored{Status: *st, TenantID: st.TenantID})
+	value, err = json.Marshal(stored{Status: *st, TenantID: st.TenantID})
+	if err != nil {
+		return "", nil, 0, err
+	}
+	return s.prefix + st.ID, value, s.ttl, nil
+}
+
+// Put writes s, replacing any previous status for the same ID.
+func (s *Store) Put(ctx context.Context, st *Status) error {
+	key, payload, ttl, err := s.Prepare(st)
 	if err != nil {
 		return err
 	}
-	if err := s.rdb.Set(ctx, s.prefix+st.ID, payload, s.ttl).Err(); err != nil {
+	if err := s.rdb.Set(ctx, key, payload, ttl).Err(); err != nil {
 		return fmt.Errorf("status: put: %w", err)
 	}
 	return nil

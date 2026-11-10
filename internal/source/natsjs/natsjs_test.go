@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/theo-mrn/kourrier/internal/cloudevent"
 	"github.com/theo-mrn/kourrier/internal/dispatch"
@@ -63,9 +64,10 @@ func (f *fakeDispatcher) count() int {
 }
 
 type fixture struct {
-	js   jetstream.JetStream
-	disp *fakeDispatcher
-	stop func()
+	js      jetstream.JetStream
+	disp    *fakeDispatcher
+	metrics *observability.Metrics
+	stop    func()
 }
 
 func newFixture(t *testing.T, script ...dispatch.Outcome) *fixture {
@@ -93,11 +95,12 @@ func newFixture(t *testing.T, script ...dispatch.Outcome) *fixture {
 		t.Fatal(err)
 	}
 	disp := &fakeDispatcher{script: script, seen: make(chan struct{}, 100)}
+	metrics := observability.NewMetrics("test")
 	c, err := New(Config{URL: s.ClientURL(), Name: "test"}, []routing.NATSSource{{
 		Name: "orders", Tenant: "shop", Stream: "ORDERS", Consumer: "kourrier",
 		FilterSubjects: []string{"orders.>"}, AckWait: 30 * time.Second,
 	}}, Deps{
-		Tenants: tenants, Dispatcher: disp, Metrics: observability.NewMetrics("test"),
+		Tenants: tenants, Dispatcher: disp, Metrics: metrics,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -108,7 +111,24 @@ func newFixture(t *testing.T, script ...dispatch.Outcome) *fixture {
 	go func() { _ = c.Run(runCtx); close(done) }()
 	stop := func() { cancel(); <-done }
 	t.Cleanup(stop)
-	return &fixture{js: js, disp: disp, stop: stop}
+	waitConsumer(t, js, "ORDERS", "kourrier")
+	return &fixture{js: js, disp: disp, metrics: metrics, stop: stop}
+}
+
+// waitConsumer waits for Kourrier to create its consumer: with the default
+// "new" deliver policy, events published before that are not delivered.
+func waitConsumer(t *testing.T, js jetstream.JetStream, stream, name string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := js.Consumer(context.Background(), stream, name); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("consumer not created")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func (f *fixture) publish(t *testing.T, msg *nats.Msg) {
@@ -170,7 +190,8 @@ func TestConsumesStructuredAndBinaryEvents(t *testing.T) {
 	if f.disp.events[0].ID != "evt-1" || f.disp.events[1].ID != "evt-3" || f.disp.events[2].ID != "evt-2" {
 		t.Fatalf("unexpected events %+v", f.disp.events)
 	}
-	if info.Config.MaxDeliver != -1 || info.Config.AckPolicy != jetstream.AckExplicitPolicy || info.Config.MaxAckPending != defaultMaxAckPending {
+	if info.Config.MaxDeliver != -1 || info.Config.AckPolicy != jetstream.AckExplicitPolicy ||
+		info.Config.MaxAckPending != defaultMaxAckPending || info.Config.DeliverPolicy != jetstream.DeliverNewPolicy {
 		t.Fatalf("unexpected consumer config %+v", info.Config)
 	}
 }
@@ -207,4 +228,40 @@ func TestDrainsOnShutdown(t *testing.T) {
 	f.waitDispatched(t, 1)
 	f.stop()
 	f.waitSettled(t)
+}
+
+func (f *fixture) sourceUp() float64 {
+	return testutil.ToFloat64(f.metrics.EventSourceUp.WithLabelValues("orders"))
+}
+
+func TestSourceUpAfterFirstConnection(t *testing.T) {
+	f := newFixture(t, dispatch.Accepted)
+	deadline := time.Now().Add(5 * time.Second)
+	for f.sourceUp() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("kourrier_event_source_up never reached 1")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestRebindsDeletedConsumer(t *testing.T) {
+	f := newFixture(t, dispatch.Accepted)
+	if err := f.js.DeleteConsumer(context.Background(), "ORDERS", "kourrier"); err != nil {
+		t.Fatal(err)
+	}
+	// Kourrier notices the deletion and recreates its consumer; events
+	// published afterwards are consumed again.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		f.publish(t, &nats.Msg{Subject: "orders.paid", Data: []byte(structured)})
+		select {
+		case <-f.disp.seen:
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("consumer was not rebound after deletion")
+		}
+	}
 }

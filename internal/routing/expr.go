@@ -63,7 +63,8 @@ func compile(env *cel.Env, src string, want ...*cel.Type) (*expr, error) {
 	}
 	ok := out.IsExactType(types.DynType)
 	for _, w := range want {
-		ok = ok || out.IsAssignableType(w)
+		// w.IsAssignableType(out): can a value of type out be used as a w?
+		ok = ok || w.IsAssignableType(out)
 	}
 	if !ok {
 		return nil, fmt.Errorf("expression returns %s, expected %v", out, want)

@@ -1,45 +1,30 @@
 package idempotency
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
 )
 
-func TestReserve(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer rdb.Close()
-	s := NewStore(rdb, "test", time.Hour)
-	ctx := context.Background()
-
-	first := Record{JobID: "job-1", Fingerprint: "fp"}
-	existing, err := s.Reserve(ctx, "yner", "key-1", first)
-	if err != nil || existing != nil {
-		t.Fatalf("first Reserve = %v, %v", existing, err)
+func TestPrepareAndDecode(t *testing.T) {
+	s := NewStore("test", time.Hour)
+	rec := Record{JobID: "job-1", Fingerprint: "fp"}
+	key, value, ttl, err := s.Prepare("yner", "key-1", rec)
+	if err != nil || ttl != time.Hour {
+		t.Fatalf("Prepare() = %q, %v, %v", key, ttl, err)
 	}
-	existing, err = s.Reserve(ctx, "yner", "key-1", Record{JobID: "job-2", Fingerprint: "fp"})
-	if err != nil || existing == nil || *existing != first {
-		t.Fatalf("second Reserve should return the original record, got %v, %v", existing, err)
+	if !strings.HasPrefix(key, "{test}:idem:yner:") || strings.Contains(key, "key-1") {
+		t.Fatalf("key %q must be in the queue hash tag, scoped and hashed", key)
 	}
-	// Keys are scoped per tenant.
-	if existing, _ := s.Reserve(ctx, "other", "key-1", first); existing != nil {
-		t.Fatal("idempotency keys must not leak across tenants")
+	if other, _, _, _ := s.Prepare("other", "key-1", rec); other == key {
+		t.Fatal("idempotency keys must not leak across scopes")
 	}
-	if err := s.Release(ctx, "yner", "key-1"); err != nil {
-		t.Fatal(err)
+	got, err := Decode(value)
+	if err != nil || *got != rec {
+		t.Fatalf("Decode() = %+v, %v", got, err)
 	}
-	if existing, _ := s.Reserve(ctx, "yner", "key-1", first); existing != nil {
-		t.Fatal("released key should be reservable again")
-	}
-
-	mr.FastForward(2 * time.Hour)
-	if existing, _ := s.Reserve(ctx, "yner", "key-1", first); existing != nil {
-		t.Fatal("expired key should be reservable again")
+	if _, err := Decode([]byte("{")); err == nil {
+		t.Fatal("Decode must reject invalid records")
 	}
 }
 
