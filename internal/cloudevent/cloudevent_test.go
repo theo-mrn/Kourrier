@@ -2,6 +2,7 @@ package cloudevent
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -197,5 +198,63 @@ func TestParseNATS(t *testing.T) {
 	// Binary mode still works.
 	if _, err := ParseNATS(headers("ce-specversion", "1.0", "ce-id", "1", "ce-source", "/s", "ce-type", "t"), nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStrictJSON(t *testing.T) {
+	deep := strings.Repeat("[", MaxDepth+1) + strings.Repeat("]", MaxDepth+1)
+	okDeep := strings.Repeat("[", MaxDepth) + strings.Repeat("]", MaxDepth)
+	tests := []struct {
+		name, body string
+		ok         bool
+	}{
+		{"valid", `{"a":{"b":[1,{"c":2}],"d":"x"},"e":null}`, true},
+		{"same key in sibling objects", `{"a":{"k":1},"b":{"k":2}}`, true},
+		{"duplicate top-level key", `{"id":"a","id":"b"}`, false},
+		{"duplicate nested key", `{"data":{"email":"a@b.fr","email":"evil@x.fr"}}`, false},
+		{"max depth", okDeep, true},
+		{"too deep", deep, false},
+		{"trailing", `{} {}`, false},
+		{"empty", ``, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := checkJSON([]byte(tt.body)); (err == nil) != tt.ok {
+				t.Fatalf("checkJSON() = %v, want ok=%v", err, tt.ok)
+			}
+		})
+	}
+
+	// Duplicate attributes and duplicate data keys are rejected in both modes.
+	if _, err := ParseStructured([]byte(`{"specversion":"1.0","id":"1","id":"2","source":"/s","type":"t"}`)); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("structured duplicate: %v", err)
+	}
+	h := headers("ce-specversion", "1.0", "ce-id", "1", "ce-source", "/s", "ce-type", "t", "content-type", "application/json")
+	if _, err := Parse(h, []byte(`{"to":"a@b.fr","to":"c@d.fr"}`)); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("binary duplicate: %v", err)
+	}
+}
+
+func TestMarshalStructuredRoundTrip(t *testing.T) {
+	e, err := ParseStructured([]byte(structured))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := e.MarshalStructured()
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := ParseStructured(b)
+	if err != nil {
+		t.Fatalf("re-parse %s: %v", b, err)
+	}
+	if back.ID != e.ID || back.Type != e.Type || !back.Time.Equal(e.Time) || back.Extensions["sequence"] != "7" ||
+		back.Subject != e.Subject {
+		t.Fatalf("round trip changed the event:\n%+v\n%+v", e, back)
+	}
+	d1, _ := e.DecodeData()
+	d2, _ := back.DecodeData()
+	if !reflect.DeepEqual(d1, d2) {
+		t.Fatalf("round trip changed the data: %v != %v", d1, d2)
 	}
 }

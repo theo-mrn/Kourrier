@@ -4,10 +4,12 @@
 // Acknowledgements follow the dispatch outcome:
 //
 //	accepted, ignored  -> Ack
-//	rejected, invalid  -> Term (never redelivered; JetStream publishes a
-//	                      MSG_TERMINATED advisory that can be captured)
-//	retry              -> NakWithDelay, with an exponential delay based on
-//	                      the delivery count, or a fixed delay on backpressure
+//	rejected, invalid  -> kept in the event dead-letter queue, then Term
+//	                      (never redelivered by the broker); if it cannot be
+//	                      kept, NakWithDelay instead
+//	retry              -> NakWithDelay: the tenant limiter's delay, a fixed
+//	                      delay on backpressure, or an exponential delay
+//	                      based on the delivery count
 //
 // The consumer is created or updated at startup unless the source is
 // configured with bind: true. Streams are never created: they belong to the
@@ -28,6 +30,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/theo-mrn/kourrier/internal/cloudevent"
+	"github.com/theo-mrn/kourrier/internal/deadevent"
 	"github.com/theo-mrn/kourrier/internal/dispatch"
 	"github.com/theo-mrn/kourrier/internal/observability"
 	"github.com/theo-mrn/kourrier/internal/routing"
@@ -72,16 +75,19 @@ type Config struct {
 	CAFile   string
 	CertFile string
 	KeyFile  string
+	// MaxBytes caps the size of one event (default 256 KiB).
+	MaxBytes int64
 }
 
 // Consumer runs one JetStream pull consumer per configured source.
 type Consumer struct {
-	cfg        Config
-	sources    []routing.NATSSource
-	tenants    *tenant.Registry
-	dispatcher Dispatcher
-	metrics    *observability.Metrics
-	logger     *slog.Logger
+	cfg         Config
+	sources     []routing.NATSSource
+	tenants     *tenant.Registry
+	dispatcher  Dispatcher
+	deadLetters dispatch.DeadLetters
+	metrics     *observability.Metrics
+	logger      *slog.Logger
 
 	connected atomic.Bool
 	consuming map[string]*atomic.Bool // by source name
@@ -91,8 +97,10 @@ type Consumer struct {
 type Deps struct {
 	Tenants    *tenant.Registry
 	Dispatcher Dispatcher
-	Metrics    *observability.Metrics
-	Logger     *slog.Logger
+	// DeadLetters keeps invalid payloads; optional.
+	DeadLetters dispatch.DeadLetters
+	Metrics     *observability.Metrics
+	Logger      *slog.Logger
 }
 
 // New creates a Consumer. It does not connect: Run does.
@@ -102,8 +110,12 @@ func New(cfg Config, sources []routing.NATSSource, d Deps) (*Consumer, error) {
 			return nil, fmt.Errorf("natsjs: source %q: unknown tenant %q", s.Name, s.Tenant)
 		}
 	}
+	if cfg.MaxBytes <= 0 {
+		cfg.MaxBytes = 256 << 10
+	}
 	c := &Consumer{
-		cfg: cfg, sources: sources, tenants: d.Tenants, dispatcher: d.Dispatcher, metrics: d.Metrics, logger: d.Logger,
+		cfg: cfg, sources: sources, tenants: d.Tenants, dispatcher: d.Dispatcher, deadLetters: d.DeadLetters,
+		metrics: d.Metrics, logger: d.Logger,
 		consuming: make(map[string]*atomic.Bool, len(sources)),
 	}
 	for _, s := range sources {
@@ -290,6 +302,14 @@ func (c *Consumer) consume(ctx context.Context, js jetstream.JetStream, src rout
 		cons, err = js.Consumer(setupCtx, src.Stream, src.Consumer)
 	} else {
 		cons, err = js.CreateOrUpdateConsumer(setupCtx, src.Stream, consumerConfig(src))
+		if err != nil {
+			if _, getErr := js.Consumer(setupCtx, src.Stream, src.Consumer); getErr == nil {
+				// It exists but cannot be updated: an immutable field (deliver
+				// policy...) differs from what Kourrier would create.
+				err = fmt.Errorf("consumer %q exists with a configuration Kourrier cannot update "+
+					"(e.g. its deliver policy); delete it or set bind: true to use it as is: %w", src.Consumer, err)
+			}
+		}
 	}
 	if err != nil {
 		return nil, nil, err
@@ -361,11 +381,17 @@ func (c *Consumer) handle(ctx context.Context, src routing.NATSSource, t *tenant
 		log.DebugContext(hctx, "cannot extend the ack deadline", "error", err)
 	}
 
-	e, err := cloudevent.ParseNATS(msg.Headers(), msg.Data())
+	var (
+		e   *cloudevent.Event
+		err error
+	)
+	if size := len(msg.Data()); int64(size) > c.cfg.MaxBytes {
+		err = fmt.Errorf("event of %d bytes exceeds the %d bytes limit", size, c.cfg.MaxBytes)
+	} else {
+		e, err = cloudevent.ParseNATS(msg.Headers(), msg.Data())
+	}
 	if err != nil {
-		c.metrics.EventsReceived.WithLabelValues(src.Name, string(dispatch.Rejected)).Inc()
-		log.WarnContext(hctx, "invalid event terminated", "subject", msg.Subject(), "error", err)
-		c.settle(hctx, log, msg, func() error { return msg.TermWithReason(truncate("invalid cloudevent: " + err.Error())) })
+		c.invalid(hctx, src, log, msg, err)
 		return
 	}
 
@@ -382,12 +408,42 @@ func (c *Consumer) handle(ctx context.Context, src routing.NATSSource, t *tenant
 		}
 		c.settle(hctx, log, msg, func() error { return msg.TermWithReason(truncate(reason)) })
 	default: // dispatch.Retry
-		delay := backpressureDelay
-		if !errors.Is(rep.Err, dispatch.ErrBackpressure) {
+		var delay time.Duration
+		switch {
+		case rep.RetryAfter > 0:
+			delay = min(rep.RetryAfter, maxRetryDelay)
+		case errors.Is(rep.Err, dispatch.ErrBackpressure):
+			delay = backpressureDelay
+		default:
 			delay = retryDelay(msg)
 		}
 		c.settle(hctx, log, msg, func() error { return msg.NakWithDelay(delay) })
 	}
+}
+
+// invalid keeps an unusable payload in the event dead-letter queue, for
+// inspection, then terminates it. Oversized payloads are not stored. If the
+// dead-letter queue is unavailable the message is redelivered later rather
+// than lost.
+func (c *Consumer) invalid(ctx context.Context, src routing.NATSSource, log *slog.Logger, msg jetstream.Msg, cause error) {
+	c.metrics.EventsReceived.WithLabelValues(src.Name, string(dispatch.Rejected)).Inc()
+	if c.deadLetters != nil {
+		entry := deadevent.Entry{
+			Tenant: src.Tenant, Source: src.Name, Reason: deadevent.Invalid,
+			Detail: "subject " + msg.Subject() + ": " + cause.Error(),
+		}
+		if int64(len(msg.Data())) <= c.cfg.MaxBytes {
+			entry.Event = msg.Data()
+		}
+		if _, err := c.deadLetters.Add(ctx, entry); err != nil {
+			log.ErrorContext(ctx, "cannot keep the invalid event, it will be redelivered", "error", err)
+			c.settle(ctx, log, msg, func() error { return msg.NakWithDelay(retryDelay(msg)) })
+			return
+		}
+		c.metrics.EventsDeadLettered.WithLabelValues(src.Name, string(deadevent.Invalid)).Inc()
+	}
+	log.WarnContext(ctx, "invalid event terminated", "subject", msg.Subject(), "error", cause)
+	c.settle(ctx, log, msg, func() error { return msg.TermWithReason(truncate("invalid cloudevent: " + cause.Error())) })
 }
 
 // settle sends an acknowledgement. A lost acknowledgement only causes a

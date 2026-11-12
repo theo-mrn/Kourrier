@@ -41,6 +41,29 @@ var natsName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 type Config struct {
 	Router *Router
 	NATS   []NATSSource
+	Limits Limits
+}
+
+// Limit caps the rate at which a tenant's events may create e-mails. It
+// keeps one tenant from filling the shared queue and starving the others.
+type Limit struct {
+	EmailsPerSecond float64 `yaml:"emails_per_second"`
+	Burst           int     `yaml:"burst"`
+}
+
+// Limits holds the default limit and per-tenant overrides. A zero Limit
+// means unlimited.
+type Limits struct {
+	Default Limit            `yaml:"default"`
+	Tenants map[string]Limit `yaml:"tenants"`
+}
+
+// For returns the limit that applies to tenant.
+func (l Limits) For(tenant string) Limit {
+	if t, ok := l.Tenants[tenant]; ok {
+		return t
+	}
+	return l.Default
 }
 
 // NATSSource binds a JetStream durable consumer to a tenant: every event read
@@ -57,6 +80,9 @@ type NATSSource struct {
 	// updating it, for setups where consumers are managed declaratively
 	// (NACK, Terraform) and Kourrier has no permission to create them.
 	Bind bool
+	// OnUnrouted is "ignore" (default) or "dead_letter": keep events no route
+	// matches, to catch a typo in an event type or a missing route.
+	OnUnrouted string
 	// DeliverPolicy is "new" (default: only events published after the
 	// consumer is created) or "all" (replay what the stream retains).
 	DeliverPolicy string
@@ -64,6 +90,12 @@ type NATSSource struct {
 	MaxDeliver    int
 	MaxAckPending int
 }
+
+// Policies for unrouted events of a NATS source.
+const (
+	UnroutedIgnore     = "ignore"
+	UnroutedDeadLetter = "dead_letter"
+)
 
 // Deliver policies of a NATS source.
 const (
@@ -82,6 +114,7 @@ type fileSchema struct {
 		NATS []natsSchema `yaml:"nats"`
 	} `yaml:"sources"`
 	Routes []routeSchema `yaml:"routes"`
+	Limits Limits        `yaml:"limits"`
 }
 
 // natsSchema mirrors NATSSource field for field (it converts to it) and only
@@ -93,6 +126,7 @@ type natsSchema struct {
 	Consumer       string        `yaml:"consumer"`
 	FilterSubjects []string      `yaml:"filter_subjects"`
 	Bind           bool          `yaml:"bind"`
+	OnUnrouted     string        `yaml:"on_unrouted"`
 	DeliverPolicy  string        `yaml:"deliver_policy"`
 	AckWait        time.Duration `yaml:"ack_wait"`
 	MaxDeliver     int           `yaml:"max_deliver"`
@@ -182,6 +216,12 @@ func Parse(data []byte, tenants Tenants) (*Config, error) {
 			routes = append(routes, rt)
 		}
 	}
+	v.limit("limits.default", f.Limits.Default)
+	for id, l := range f.Limits.Tenants {
+		v.tenant("limits.tenants["+id+"]", id)
+		v.limit("limits.tenants["+id+"]", l)
+	}
+	cfg.Limits = f.Limits
 	if err := errors.Join(v.errs...); err != nil {
 		return nil, fmt.Errorf("routing: invalid configuration:\n%w", err)
 	}
@@ -215,6 +255,15 @@ func (v *validator) tenant(field, id string) *tenant.Tenant {
 	return t
 }
 
+func (v *validator) limit(field string, l Limit) {
+	if l.EmailsPerSecond < 0 || l.Burst < 0 {
+		v.errorf(field, "emails_per_second and burst must be >= 0")
+	}
+	if l.EmailsPerSecond == 0 && l.Burst != 0 {
+		v.errorf(field, "burst needs emails_per_second")
+	}
+}
+
 func (v *validator) natsSource(field string, s natsSchema) (NATSSource, bool) {
 	n := len(v.errs)
 	if !mail.NamePattern.MatchString(s.Name) {
@@ -234,6 +283,12 @@ func (v *validator) natsSource(field string, s natsSchema) (NATSSource, bool) {
 	}
 	if s.AckWait == 0 {
 		s.AckWait = defaultAckWait
+	}
+	if s.OnUnrouted == "" {
+		s.OnUnrouted = UnroutedIgnore
+	}
+	if s.OnUnrouted != UnroutedIgnore && s.OnUnrouted != UnroutedDeadLetter {
+		v.errorf(field+".on_unrouted", "must be %q or %q", UnroutedIgnore, UnroutedDeadLetter)
 	}
 	if s.DeliverPolicy == "" {
 		// Never replay a stream's history by default: that would send an

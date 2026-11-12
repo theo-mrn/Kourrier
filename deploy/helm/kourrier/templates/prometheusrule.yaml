@@ -54,6 +54,14 @@ spec:
           annotations:
             summary: Events from {{ "{{" }} $labels.source {{ "}}" }} are rejected
             description: Producers send invalid events or a route cannot be evaluated. The reason is logged ("event rejected"); NATS also publishes MSG_TERMINATED advisories.
+        - alert: KourrierDeadEvents
+          expr: max by (namespace) (kourrier_dead_events) > {{ .Values.prometheusRule.deadEventsThreshold }}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ "{{" }} $value {{ "}}" }} events wait in the event dead-letter queue"
+            description: Inspect them with `kourrier events list`, fix the route, the template or the producer, then `kourrier events replay`.
         - alert: KourrierEventSourceDown
           expr: max by (namespace, source) (kourrier_event_source_up) == 0
           for: 5m

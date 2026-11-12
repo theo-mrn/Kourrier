@@ -15,6 +15,8 @@ type Problem struct {
 	Detail    string            `json:"detail,omitempty"`
 	RequestID string            `json:"request_id,omitempty"`
 	Errors    []mail.FieldError `json:"errors,omitempty"`
+	// DeadLetterID is set when a rejected event was kept for replay.
+	DeadLetterID string `json:"dead_letter_id,omitempty"`
 }
 
 const problemBase = "https://github.com/theo-mrn/kourrier/blob/main/docs/api.md#"

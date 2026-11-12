@@ -2,7 +2,7 @@
 
 Kourrier peut écouter les **événements de domaine** de vos services (`user.signed_up`, `order.paid`…) et en déduire les e-mails à envoyer, grâce à des **routes déclaratives**. Le code métier publie ce qui s'est passé ; il ne sait pas qu'un e-mail existe.
 
-Décisions associées : [ADR 012](adr/0012-entree-evenementielle-cloudevents.md) (entrée événementielle), [ADR 013](adr/0013-routage-declaratif-cel.md) (CEL), [ADR 014](adr/0014-nats-jetstream.md) (NATS JetStream).
+Décisions associées : [ADR 012](adr/0012-entree-evenementielle-cloudevents.md) (entrée événementielle), [ADR 013](adr/0013-routage-declaratif-cel.md) (CEL), [ADR 014](adr/0014-nats-jetstream.md) (NATS JetStream), [ADR 015](adr/0015-durcissement-entree-evenementielle.md) (durcissement : scopes, limites par tenant, file des événements en échec).
 
 ## Quand l'utiliser ?
 
@@ -63,6 +63,7 @@ sources:
       consumer: kourrier               # consommateur durable
       filter_subjects: ["orders.>"]    # optionnel
       deliver_policy: new              # optionnel : new (défaut) ou all (rejoue l'historique du stream)
+      on_unrouted: ignore              # optionnel : ignore (défaut) ou dead_letter (garde les événements sans route)
       ack_wait: 30s                    # optionnel, minimum 15s
       max_deliver: 0                   # optionnel, 0 = illimité (recommandé)
       max_ack_pending: 0               # optionnel, 0 = 256
@@ -84,7 +85,16 @@ routes:
          "lines": data.lines.map(l, l.label)}
       from: { email: billing@news.shop.fr, name: Shop }   # optionnel, doit être autorisé
       tags: { flow: billing }          # optionnel, 8 maximum
+
+limits:                                # optionnel : e-mails créés par seconde, par tenant
+  default: { emails_per_second: 20, burst: 100 }
+  tenants:
+    shop: { emails_per_second: 100, burst: 500 }
 ```
+
+Le **nom d'une route** fait partie de la clé d'idempotence de ses e-mails. Renommer une route revient à en créer une nouvelle : un événement redélivré pendant le TTL d'idempotence produit un second e-mail. Renommez donc hors trafic, ou acceptez ce doublon ponctuel.
+
+**Limites par tenant.** Chaque tenant dispose d'un budget d'e-mails créés par ses événements (GCRA partagé entre les Pods). Au-delà, l'événement est redélivré plus tard (`429` en HTTP, `NakWithDelay` en NATS) : un tenant qui inonde Kourrier ne remplit pas la file au détriment des autres. Sans `limits`, aucune limite ne s'applique.
 
 Règles de correspondance :
 
@@ -150,7 +160,7 @@ Exemple de job GitHub Actions :
 
 ## Transport HTTP : `POST /v1/events`
 
-Kourrier accepte les modes *structured* (`Content-Type: application/cloudevents+json`) et *binary* (`ce-*` + `Content-Type: application/json`). L'appel est authentifié par la clé API du tenant.
+Kourrier accepte les modes *structured* (`Content-Type: application/cloudevents+json`) et *binary* (`ce-*` + `Content-Type: application/json`). L'appel est authentifié par une clé API du tenant qui porte le scope `events`. Donnez aux producteurs une clé dédiée (`kourrier keygen -scopes events`) : si elle fuit, elle ne permet pas d'envoyer des e-mails arbitraires via `POST /v1/emails`.
 
 ```sh
 curl -X POST http://localhost:8180/v1/events \
@@ -166,12 +176,16 @@ Codes de réponse, à interpréter par l'émetteur pour décider d'un nouvel ess
 |------|---------------|-------------|
 | `202` | `accepted` (e-mails en file, voir `emails`) ou `ignored` (aucune route) | non |
 | `400` | CloudEvent malformé | non |
-| `413` | Événement trop gros (`KOURRIER_MAX_BODY_BYTES`) | non |
+| `403` | Clé sans le scope `events` | non |
+| `413` | Événement trop gros (`KOURRIER_EVENTS_MAX_BYTES`, 256 Kio par défaut) | non |
 | `415` | Pas un CloudEvent, mode batch, données non JSON ou `specversion` ≠ 1.0 | non |
-| `422` | Aucune route n'a pu produire d'e-mail (détail par route dans `errors`) | non |
+| `422` | Aucune route n'a pu produire d'e-mail (détail par route dans `errors`). L'événement est conservé (`dead_letter_id`). | non |
+| `429` | Limite d'e-mails du tenant atteinte (`Retry-After`) | **oui** |
 | `503` | Redis indisponible ou backpressure (`Retry-After`) | **oui** |
 
-Une réponse `202` peut contenir des `errors` : certaines routes ont échoué, d'autres ont produit leur e-mail. Les e-mails déjà créés ne sont pas recréés lors d'un nouvel envoi du même événement.
+Une réponse `202` peut contenir des `errors` : certaines routes ont échoué, d'autres ont produit leur e-mail. Les routes en échec sont conservées pour rejeu (`dead_letter_id`). Les e-mails déjà créés ne sont pas recréés lors d'un nouvel envoi du même événement.
+
+Les erreurs `400`, `413` et `415` ne sont pas conservées par Kourrier : l'émetteur en est informé et doit garder l'événement de son côté.
 
 ## Transport NATS JetStream
 
@@ -199,15 +213,44 @@ Acquittements :
 | Issue | Action | Effet |
 |-------|--------|-------|
 | `accepted`, `ignored` | `Ack` | |
-| invalide, `rejected` | `Term` | jamais redélivré ; advisory `$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.<stream>.<consumer>` à capturer pour garder une trace |
-| `retry` (Redis) | `NakWithDelay` | 1 s, 2 s, 4 s… jusqu'à 1 min |
+| invalide, `rejected` | conservé dans la [file des événements en échec](#événements-en-échec), puis `Term` | jamais redélivré par le broker ; rejouable avec `kourrier events replay` (sauf `invalid`) |
+| `retry` (Redis, file d'échecs indisponible) | `NakWithDelay` | 1 s, 2 s, 4 s… jusqu'à 1 min |
+| `retry` (limite du tenant) | `NakWithDelay` | délai indiqué par le limiteur (1 min maximum) |
 | `retry` (backpressure) | `NakWithDelay` | 30 s |
 
 **Politique de livraison.** Par défaut (`deliver_policy: new`), un consommateur créé par Kourrier ne reçoit que les événements publiés **après** sa création. Ajouter une source sur un stream existant n'envoie donc pas un e-mail par événement historique (des « bienvenue » à tous les anciens utilisateurs, par exemple). `deliver_policy: all` rejoue ce que le stream retient : à réserver à un démarrage contrôlé. Si le consommateur est supprimé, Kourrier le recrée en `new` : les événements publiés pendant la coupure ne sont pas rejoués.
 
 Kourrier ne garde que 4 messages en mémoire tampon par source et prolonge l'échéance d'acquittement (`InProgress`) au début de chaque traitement. Un message n'est donc pas redélivré à un autre Pod pendant qu'il attend son tour.
 
+**Production.** Préférez `bind: true` et un consommateur géré de façon déclarative (NACK, Terraform). Sinon, un rolling update qui change `filter_subjects` fait mettre à jour le consommateur tour à tour par les anciens et les nouveaux Pods jusqu'à la fin du déploiement. Si un consommateur existant a une configuration que Kourrier ne peut pas modifier (politique de livraison…), le log l'indique explicitement.
+
+**Identifiants.** Le fichier de credentials est relu à chaque (re)connexion : après une rotation, la connexion en cours garde les anciens jusqu'à la prochaine reconnexion. Redémarrez les Pods pour forcer la prise en compte.
+
 Une panne de NATS n'empêche ni le démarrage ni la readiness du Pod : la connexion est retentée indéfiniment en tâche de fond (`kourrier_event_source_up` passe à `0`).
+
+## Événements en échec
+
+Kourrier ne perd pas en silence un événement qu'il n'a pas pu traiter entièrement. Il le conserve dans une file dédiée, `{kourrier}:events:dead` :
+
+| Raison | Contenu conservé | Rejouable |
+|--------|------------------|-----------|
+| `rejected` | l'événement ; toutes ses routes ont échoué | oui |
+| `partial` | l'événement et les **seules routes en échec** | oui, ces routes uniquement |
+| `unrouted` | l'événement sans route, sur une source `on_unrouted: dead_letter` | oui, avec les routes actuelles |
+| `invalid` | la charge utile NATS brute (pas un CloudEvent, ou trop grosse : sans contenu) | non, inspection seulement |
+
+Si l'événement ne peut pas être conservé (Redis indisponible), il n'est pas acquitté : le broker le redonnera.
+
+```sh
+kubectl exec deploy/kourrier -- kourrier events list -n 50
+# Corriger la route, ajouter le template..., déployer, puis :
+kubectl exec deploy/kourrier -- kourrier events replay -n 50     # ou -id <entrée>
+kubectl exec deploy/kourrier -- kourrier events delete <entrée>  # abandonner une entrée
+```
+
+Le rejeu utilise les routes et les tenants **actuels**. Une entrée rejouée est supprimée ; si elle échoue encore, elle est reconservée sous un nouvel identifiant. Une erreur transitoire arrête le rejeu sans rien perdre : relancez simplement la commande.
+
+La file contient des données personnelles. Elle est plafonnée (`KOURRIER_EVENTS_DEAD_LETTER_MAX_LEN`) ; surveillez-la avec l'alerte `KourrierDeadEvents` et videz-la (rejeu ou suppression) rapidement.
 
 ## Pattern outbox
 
@@ -230,6 +273,7 @@ Exemple de ligne d'outbox :
 - **Même événement, même identité.** Un événement redélivré après une modification des routes garde ses e-mails déjà créés : l'empreinte d'idempotence est l'identité de l'événement, pas le contenu de l'e-mail.
 - **Pas d'ordre** : deux événements peuvent produire des e-mails dans un ordre différent de leur publication.
 - **Rien n'est acquitté avant d'être persistant** : un événement n'est acquitté qu'après l'écriture de ses e-mails dans Redis (AOF requis, voir l'[ADR 002](adr/0002-file-asynchrone-redis.md)).
+- **Basculement Redis** : la réplication Redis est asynchrone. Si le primaire tombe juste après avoir confirmé une écriture, un e-mail accepté (ou un événement acquitté au broker) peut être perdu. `KOURRIER_REDIS_WAIT_REPLICAS=1` fait attendre l'acquittement d'un réplica avant toute confirmation, au prix de quelques millisecondes.
 - **Soumission atomique** : l'enregistrement d'idempotence, le statut `queued` et le job sont écrits par un seul script Lua. Un enregistrement d'idempotence n'existe jamais sans son job. Un crash ou une réponse perdue au milieu de la soumission ne peut donc ni perdre l'e-mail (faux « déjà envoyé ») ni le dupliquer (nouvel essai après un succès invisible).
 
 ## Observabilité
@@ -237,12 +281,14 @@ Exemple de ligne d'outbox :
 | Métrique | Labels | Usage |
 |----------|--------|-------|
 | `kourrier_events_received_total` | `source`, `outcome` | Débit et issues (`accepted`, `ignored`, `rejected`, `retry`). |
-| `kourrier_event_routes_total` | `tenant`, `route`, `outcome` | Par route : `queued`, `replayed` (doublon absorbé), `rejected`, `failed`. |
+| `kourrier_event_routes_total` | `tenant`, `route`, `outcome` | Par route : `queued`, `replayed` (doublon absorbé), `rejected`, `failed`, `throttled` (limite du tenant). |
+| `kourrier_events_dead_lettered_total` | `source`, `reason` | Événements conservés (`rejected`, `partial`, `unrouted`, `invalid`). |
+| `kourrier_dead_events` | | Taille de la file des événements en échec. |
 | `kourrier_event_dispatch_duration_seconds` | `source` | Latence routage + mise en file. |
 | `kourrier_events_backpressure` | | `1` quand l'ingestion est en pause. |
 | `kourrier_event_source_up` | `source` | `1` quand une source NATS consomme. |
 
-Alertes du chart (si `prometheusRule.enabled`) : `KourrierEventsRejected`, `KourrierEventSourceDown`, `KourrierEventsBackpressure`.
+Alertes du chart (si `prometheusRule.enabled`) : `KourrierEventsRejected`, `KourrierDeadEvents`, `KourrierEventSourceDown`, `KourrierEventsBackpressure`.
 
 Logs (JSON) : `event dispatched`, `event ignored` (niveau debug), `event rejected` (avec le détail par route) et `email queued` (avec `route` et `event_id`). Le contenu des événements n'est **jamais** journalisé ; les adresses sont masquées.
 
@@ -251,9 +297,12 @@ Logs (JSON) : `event dispatched`, `event ignored` (niveau debug), `event rejecte
 | Menace | Mesures |
 |--------|---------|
 | Un producteur déclenche les e-mails d'un autre tenant | Routes cloisonnées par tenant ; tenant déterminé par la clé API ou la configuration de la source, jamais par l'événement. |
+| Fuite de la clé d'un producteur | Clé limitée au scope `events` : elle ne permet pas `POST /v1/emails`. |
+| Un tenant sature la plate-forme | Limite d'e-mails par tenant à l'ingestion, taille d'événement bornée, backpressure globale. |
 | Usurpation d'expéditeur | `from` fixé dans la route, vérifié contre `allowed_senders` au démarrage puis à chaque envoi. |
 | Producteur compromis utilisé comme relais de spam (destinataires tirés de l'événement) | 50 destinataires maximum par e-mail, rate limiting global, alertes. Restreignez qui peut publier sur le stream (permissions NATS) et préférez des destinataires dérivés de champs maîtrisés. |
-| Événement malveillant (taille, imbrication, expressions coûteuses) | Corps borné, attributs bornés (2 Kio, 32 extensions), coût CEL borné, profondeur bornée, parseur fuzzé. |
+| Événement malveillant (taille, imbrication, expressions coûteuses) | Événement borné (256 Kio), attributs bornés (2 Kio, 32 extensions), JSON à 64 niveaux maximum, coût CEL borné, parseur fuzzé. |
+| Événement ambigu (clés JSON en double, lues différemment par le producteur et Kourrier) | Refusé. |
 | Fuite de données personnelles dans les logs | Ni les données ni les adresses en clair dans les logs ; métriques à labels issus de la configuration uniquement. |
 | Vol d'identifiants NATS | Fichiers montés en lecture seule (mode `0440`), mTLS possible, permissions minimales ci-dessus. |
 | Configuration erronée en production | Fichier versionné, `apiVersion`, champs inconnus refusés, compilation au démarrage, `routes check` en CI. |
@@ -266,6 +315,8 @@ Elles sont listées pour être traitées, pas cachées.
 2. **Knative Eventing** n'envoie pas d'en-tête `Authorization` aux abonnés : il faudrait supporter l'identité OIDC de Knative (audience vérifiée). En attendant, passez par NATS ou un relais.
 3. **Kafka, RabbitMQ, SQS** ne sont pas encore consommés directement : un adaptateur `internal/source/<broker>` s'ajoute sans toucher au routage.
 4. **TTL d'idempotence** (24 h) : voir [Garanties](#garanties).
-5. **Pas de rechargement à chaud** du fichier de routes : un changement redémarre les Pods (checksum dans le chart), ce qui est volontaire pour garder un état cohérent.
-6. **Statut de livraison** : `sent` signifie « accepté par le fournisseur ». Le retour des bounces et des plaintes (SNS / webhooks) n'est pas encore ingéré.
-7. **Traçage distribué** : l'extension CloudEvents `traceparent` est lisible dans les routes, mais elle n'est pas encore propagée dans les logs des workers (pas d'OpenTelemetry pour l'instant).
+5. **Équité dans la file d'envoi** : les limites par tenant protègent l'ingestion, mais la file d'envoi reste une FIFO partagée. Des files par tenant seraient l'étape suivante si un tenant légitime saturait encore l'envoi.
+6. **Toutes les clés Redis partagent le hash tag `{kourrier}`** (scripts Lua multi-clés) : sur Redis Cluster, tout est sur un seul shard. Kourrier se dimensionne verticalement côté Redis.
+7. **Pas de rechargement à chaud** du fichier de routes : un changement redémarre les Pods (checksum dans le chart), ce qui est volontaire pour garder un état cohérent.
+8. **Statut de livraison** : `sent` signifie « accepté par le fournisseur ». Le retour des bounces et des plaintes (SNS / webhooks) n'est pas encore ingéré.
+9. **Traçage distribué** : l'extension CloudEvents `traceparent` est lisible dans les routes, mais elle n'est pas encore propagée dans les logs des workers (pas d'OpenTelemetry pour l'instant).

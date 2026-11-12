@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,10 +13,12 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/theo-mrn/kourrier/internal/cloudevent"
+	"github.com/theo-mrn/kourrier/internal/deadevent"
 	"github.com/theo-mrn/kourrier/internal/idempotency"
 	"github.com/theo-mrn/kourrier/internal/mail"
 	"github.com/theo-mrn/kourrier/internal/observability"
 	"github.com/theo-mrn/kourrier/internal/queue"
+	"github.com/theo-mrn/kourrier/internal/ratelimit"
 	"github.com/theo-mrn/kourrier/internal/routing"
 	"github.com/theo-mrn/kourrier/internal/status"
 	"github.com/theo-mrn/kourrier/internal/submit"
@@ -39,6 +42,8 @@ type fixture struct {
 	d      *Dispatcher
 	q      *queue.RedisStreams
 	mr     *miniredis.Miniredis
+	rdb    *redis.Client
+	dead   *deadevent.Store
 	tenant *tenant.Tenant
 	gate   *fakeGate
 }
@@ -74,8 +79,12 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	gate := &fakeGate{}
+	dead := deadevent.NewStore(rdb, "kourrier", 100)
 	d := New(Deps{
-		Router: cfg.Router,
+		Router:             cfg.Router,
+		DeadLetters:        dead,
+		DeadLetterUnrouted: []string{"strict"},
+		Limiter:            ratelimit.NewKeyed(rdb, "kourrier"),
 		Submitter: submit.New(submit.Deps{
 			Queue:       q,
 			Idempotency: idempotency.NewStore("kourrier", time.Hour),
@@ -87,7 +96,7 @@ func newFixture(t *testing.T) *fixture {
 		Metrics: metrics,
 		Logger:  logger,
 	})
-	return &fixture{d: d, q: q, mr: mr, tenant: shop, gate: gate}
+	return &fixture{d: d, q: q, mr: mr, rdb: rdb, dead: dead, tenant: shop, gate: gate}
 }
 
 func ev(t *testing.T, typ, source, id, data string) *cloudevent.Event {
@@ -244,5 +253,97 @@ func TestIdempotencyKeyHasNoCollision(t *testing.T) {
 	b := idempotencyKey("r", &cloudevent.Event{Source: "a", ID: "1:b|c"})
 	if a == b {
 		t.Fatalf("keys collide: %q", a)
+	}
+}
+
+func (f *fixture) deadEntries(t *testing.T) []deadevent.Entry {
+	t.Helper()
+	entries, err := f.dead.List(context.Background(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+func TestDeadLetters(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	// Partial failure: only the failed route is kept for replay.
+	partial := f.d.Dispatch(ctx, "test", f.tenant, ev(t, "user.created", "/users", "1", `{"email":"not-an-address"}`))
+	if partial.Outcome != Accepted || partial.DeadLetterID == "" {
+		t.Fatalf("partial: %+v", partial)
+	}
+	// Every route fails.
+	rejected := f.d.Dispatch(ctx, "test", f.tenant, ev(t, "user.created", "/users", "2", `"a string"`))
+	if rejected.Outcome != Rejected || rejected.DeadLetterID == "" {
+		t.Fatalf("rejected: %+v", rejected)
+	}
+	// Unrouted events are kept on strict sources only.
+	if rep := f.d.Dispatch(ctx, "test", f.tenant, ev(t, "user.typo", "/users", "3", `{}`)); rep.DeadLetterID != "" {
+		t.Fatalf("unrouted event kept on a non-strict source: %+v", rep)
+	}
+	if rep := f.d.Dispatch(ctx, "strict", f.tenant, ev(t, "user.typo", "/users", "4", `{}`)); rep.Outcome != Ignored || rep.DeadLetterID == "" {
+		t.Fatalf("unrouted event on a strict source: %+v", rep)
+	}
+
+	entries := f.deadEntries(t)
+	if len(entries) != 3 {
+		t.Fatalf("%d dead entries, want 3", len(entries))
+	}
+	if e := entries[0]; e.Reason != deadevent.Partial || len(e.Routes) != 1 || e.Routes[0] != "welcome" || e.Tenant != "shop" {
+		t.Fatalf("partial entry: %+v", e)
+	}
+	if e := entries[1]; e.Reason != deadevent.Rejected || len(e.Routes) != 2 {
+		t.Fatalf("rejected entry: %+v", e)
+	}
+	if e := entries[2]; e.Reason != deadevent.Unrouted || e.Routes != nil || !strings.Contains(e.Detail, "user.typo") {
+		t.Fatalf("unrouted entry: %+v", e)
+	}
+
+	// Replaying the partial entry only runs the failed route, which still
+	// fails: it is kept again, and the admin e-mail is not resent.
+	stored, err := cloudevent.ParseStructured(entries[0].Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := f.queued(t)
+	again := f.d.Replay(ctx, f.tenant, stored, entries[0].Routes)
+	if again.Outcome != Rejected || len(again.Errors) != 1 || again.DeadLetterID == "" || f.queued(t) != before {
+		t.Fatalf("replay: %+v (queued %d -> %d)", again, before, f.queued(t))
+	}
+}
+
+func TestDeadLetterFailureRetries(t *testing.T) {
+	f := newFixture(t)
+	// The e-mail queue works but the dead-letter stream cannot be written:
+	// the event must be redelivered, not silently dropped.
+	if err := f.mr.Set("{kourrier}:events:dead", "not a stream"); err != nil {
+		t.Fatal(err)
+	}
+	rep := f.d.Dispatch(context.Background(), "test", f.tenant, ev(t, "user.created", "/users", "1", `{"email":"not-an-address"}`))
+	if rep.Outcome != Retry || !errors.Is(rep.Err, submit.ErrUnavailable) {
+		t.Fatalf("unexpected report %+v", rep)
+	}
+}
+
+func TestTenantRateLimit(t *testing.T) {
+	f := newFixture(t)
+	f.d.limits = routing.Limits{Tenants: map[string]routing.Limit{"shop": {EmailsPerSecond: 0.001, Burst: 3}}}
+	ctx := context.Background()
+	// Two e-mails per event, three tokens: the second event is throttled
+	// after its first route.
+	if rep := f.d.Dispatch(ctx, "test", f.tenant, ev(t, "user.created", "/users", "1", `{"email":"a@b.fr"}`)); rep.Outcome != Accepted {
+		t.Fatalf("first event: %+v", rep)
+	}
+	rep := f.d.Dispatch(ctx, "test", f.tenant, ev(t, "user.created", "/users", "2", `{"email":"a@b.fr"}`))
+	if rep.Outcome != Retry || !errors.Is(rep.Err, ErrTenantRateLimited) || rep.RetryAfter <= 0 || len(rep.Emails) != 1 {
+		t.Fatalf("throttled event: %+v", rep)
+	}
+	// Other tenants keep their own budget.
+	f.d.limits.Default = routing.Limit{}
+	other := &tenant.Tenant{ID: "other", DefaultSender: mail.Address{Email: "a@o.fr"}, AllowedSenders: []string{"a@o.fr"}}
+	if rep := f.d.Dispatch(ctx, "test", other, ev(t, "user.created", "/users", "3", `{}`)); rep.Outcome != Ignored {
+		t.Fatalf("other tenant: %+v", rep)
 	}
 }

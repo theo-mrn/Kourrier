@@ -17,7 +17,8 @@ Le rejeu remet le compteur de tentatives à zéro. La métrique `kourrier_queue_
 ## Ajouter un tenant ou faire tourner une clé
 
 ```sh
-kourrier keygen        # affiche la clé (à transmettre au client) et son empreinte
+kourrier keygen                   # clé avec tous les scopes (emails, events)
+kourrier keygen -scopes events    # clé pour un producteur d'événements uniquement
 ```
 
 1. Ajouter l'empreinte dans `api_keys` du tenant (values Helm `tenants` ou Secret existant).
@@ -42,7 +43,8 @@ Un changement du fichier (values `events.routes` ou ConfigMap existante gérée 
 - **Événements rejetés** : le log `event rejected` donne la raison par route. Côté NATS, capturez les advisories `MSG_TERMINATED` pour conserver les événements terminés.
 - **Source arrêtée** : `kourrier_event_source_up == 0`. Vérifiez la connexion, l'existence du stream et du consommateur, et les permissions (`cannot start consuming` dans les logs).
 - **Backpressure** : `kourrier_events_backpressure == 1`. Les e-mails partent moins vite qu'ils n'arrivent ; l'arriéré reste dans NATS. Agissez sur l'envoi (quota fournisseur, rate limit, workers), pas sur l'ingestion.
-- **Rejouer des événements** : créez un consommateur temporaire avec la politique de livraison voulue. Dans le TTL d'idempotence, les e-mails déjà créés ne sont pas renvoyés.
+- **Événements en échec** : `kourrier events list`, puis `kourrier events replay` une fois la cause corrigée (voir [events.md](events.md#événements-en-échec)). L'alerte `KourrierDeadEvents` signale toute entrée.
+- **Rejouer des événements depuis le broker** : créez un consommateur temporaire avec la politique de livraison voulue. Dans le TTL d'idempotence, les e-mails déjà créés ne sont pas renvoyés.
 
 ## Alertes (PrometheusRule)
 
@@ -53,6 +55,7 @@ Un changement du fichier (values `events.routes` ou ConfigMap existante gérée 
 | `KourrierQueueBacklog` | Débit entrant supérieur au rate limit ou fournisseur lent. | Vérifier `rate_limit_wait_seconds`, augmenter le quota ou la concurrence. |
 | `KourrierHighRetryRate` | Throttling ou panne du fournisseur. | Vérifier la page de statut du fournisseur, le quota SES. |
 | `KourrierEventsRejected` | Producteur qui envoie des événements invalides, ou route inévaluable (champ manquant). | Log `event rejected`, puis corriger la route (`?`/`orValue`) ou le producteur. |
+| `KourrierDeadEvents` | Événements conservés après un échec (route, template, producteur). | `kourrier events list`, corriger, `kourrier events replay`. |
 | `KourrierEventSourceDown` | NATS injoignable, stream ou consommateur absent, permissions. | Logs `cannot start consuming`, `nats consumer info`. |
 | `KourrierEventsBackpressure` | Envoi plus lent que la production d'événements. | Voir `KourrierQueueBacklog`. |
 

@@ -24,6 +24,8 @@ Toute la configuration passe par des variables d'environnement préfixées `KOUR
 | `KOURRIER_REDIS_DB` | `0` | Base. |
 | `KOURRIER_REDIS_TLS` | `false` | Active TLS. |
 | `KOURRIER_REDIS_KEY_PREFIX` | `kourrier` | Préfixe des clés (`{kourrier}:…`). |
+| `KOURRIER_REDIS_WAIT_REPLICAS` | `0` | Nombre de réplicas devant acquitter chaque soumission (`WAIT`) avant confirmation. Protège d'une perte lors d'un basculement. `0` = désactivé. |
+| `KOURRIER_REDIS_WAIT_TIMEOUT` | `500ms` | Attente maximale des réplicas ; au-delà, la soumission est rejetée comme transitoire (`503`). |
 
 ## File et workers
 
@@ -79,6 +81,8 @@ Active quand `KOURRIER_EVENTS_ROUTES_FILE` est renseigné, dans les modes `all` 
 | Variable | Défaut | Description |
 |----------|--------|-------------|
 | `KOURRIER_EVENTS_ROUTES_FILE` | | Fichier de routes (sources et routes). Vide = entrée désactivée, `POST /v1/events` répond `404`. |
+| `KOURRIER_EVENTS_MAX_BYTES` | `262144` | Taille maximale d'un événement (corps HTTP ou message NATS). |
+| `KOURRIER_EVENTS_DEAD_LETTER_MAX_LEN` | `10000` | Taille maximale (approximative) de la file des événements en échec. |
 | `KOURRIER_EVENTS_MAX_QUEUE_DEPTH` | `50000` | Pause de l'ingestion au-delà de ce nombre d'e-mails en attente (`ready` + `delayed`). `0` = désactivé. |
 | `KOURRIER_EVENTS_NATS_URL` | `nats://localhost:4222` | Serveur(s) NATS, séparés par des virgules. Utilisé seulement si le fichier déclare des `sources.nats`. |
 | `KOURRIER_EVENTS_NATS_CREDS_FILE` | | Fichier de credentials NATS (JWT + seed). Exclusif avec `_NKEY_FILE`. |

@@ -72,7 +72,7 @@ func TestEventResponses(t *testing.T) {
 		{"batch", ynerKey, `[]`, "application/cloudevents-batch+json", http.StatusUnsupportedMediaType, "batch"},
 		{"malformed", ynerKey, `{"specversion":"1.0"}`, ce, http.StatusBadRequest, "malformed-cloudevent"},
 		{"too large", ynerKey, strings.Repeat("a", 65<<10), ce, http.StatusRequestEntityTooLarge, ""},
-		{"rejected", ynerKey, strings.Replace(structuredEvent, "jane@example.com", "nope", 1), ce, http.StatusUnprocessableEntity, "routes.welcome"},
+		{"rejected and kept", ynerKey, strings.Replace(structuredEvent, "jane@example.com", "nope", 1), ce, http.StatusUnprocessableEntity, `"dead_letter_id":"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -98,5 +98,38 @@ func TestEventRetryOnBackendFailure(t *testing.T) {
 	rec := f.do("POST", "/v1/events", ynerKey, structuredEvent, "Content-Type", "application/cloudevents+json")
 	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
 		t.Fatalf("status = %d, headers = %v", rec.Code, rec.Header())
+	}
+}
+
+func TestEventTenantRateLimit(t *testing.T) {
+	f := newFixtureWithRoutes(t, eventRoutes+`
+limits:
+  tenants:
+    yner: { emails_per_second: 0.001, burst: 1 }
+`)
+	ce := "application/cloudevents+json"
+	if rec := f.do("POST", "/v1/events", ynerKey, structuredEvent, "Content-Type", ce); rec.Code != http.StatusAccepted {
+		t.Fatalf("first event: %d %s", rec.Code, rec.Body)
+	}
+	rec := f.do("POST", "/v1/events", ynerKey, strings.Replace(structuredEvent, "evt-1", "evt-2", 1), "Content-Type", ce)
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("second event: %d %v %s", rec.Code, rec.Header(), rec.Body)
+	}
+}
+
+func TestScopedKeys(t *testing.T) {
+	f := newFixtureWithRoutes(t, eventRoutes)
+	ce := "application/cloudevents+json"
+	// eventsKey only grants the events scope (see newFixtureWithRoutes).
+	if rec := f.do("POST", "/v1/events", eventsKey, structuredEvent, "Content-Type", ce); rec.Code != http.StatusAccepted {
+		t.Fatalf("events key on /v1/events: %d %s", rec.Code, rec.Body)
+	}
+	rec := f.do("POST", "/v1/emails", eventsKey, validBody)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "insufficient-scope") {
+		t.Fatalf("events key on /v1/emails: %d %s", rec.Code, rec.Body)
+	}
+	// Reading the templates is allowed with any scope: routes choose them too.
+	if rec := f.do("GET", "/v1/templates", eventsKey, ""); rec.Code != http.StatusOK {
+		t.Fatalf("events key on /v1/templates: %d %s", rec.Code, rec.Body)
 	}
 }

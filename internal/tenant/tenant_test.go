@@ -1,6 +1,7 @@
 package tenant
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -68,5 +69,43 @@ func TestParseRejectsInvalidConfig(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 		})
+	}
+}
+
+func TestScopes(t *testing.T) {
+	r, err := Parse([]byte(`
+tenants:
+  - id: shop
+    allowed_senders: ["*@shop.fr"]
+    api_keys:
+      - sha256: ` + HashKey("kr_all") + `
+      - sha256: ` + HashKey("kr_events") + `
+        scopes: [events]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Authorize("kr_all", ScopeEmails); err != nil {
+		t.Fatalf("a key without scopes keeps every scope: %v", err)
+	}
+	if _, err := r.Authorize("kr_events", ScopeEvents); err != nil {
+		t.Fatal(err)
+	}
+	if tn, err := r.Authorize("kr_events", ScopeEmails); !errors.Is(err, ErrForbidden) || tn == nil {
+		t.Fatalf("events-only key used for e-mails: %v", err)
+	}
+	if _, err := r.Authorize("kr_events", ""); err != nil {
+		t.Fatalf("any-scope check: %v", err)
+	}
+	if _, err := r.Authorize("kr_nope", ScopeEvents); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("unknown key: %v", err)
+	}
+	if _, err := Parse([]byte(`
+tenants:
+  - id: shop
+    allowed_senders: ["*@shop.fr"]
+    api_keys: [{sha256: ` + HashKey("x") + `, scopes: [admin]}]
+`)); err == nil || !strings.Contains(err.Error(), "unknown scope") {
+		t.Fatalf("unknown scope accepted: %v", err)
 	}
 }

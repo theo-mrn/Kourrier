@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/theo-mrn/kourrier/internal/cloudevent"
+	"github.com/theo-mrn/kourrier/internal/deadevent"
 	"github.com/theo-mrn/kourrier/internal/dispatch"
 	"github.com/theo-mrn/kourrier/internal/mail"
 	"github.com/theo-mrn/kourrier/internal/observability"
@@ -63,8 +64,28 @@ func (f *fakeDispatcher) count() int {
 	return len(f.events)
 }
 
+// fakeDead records dead-lettered entries.
+type fakeDead struct {
+	mu      sync.Mutex
+	entries []deadevent.Entry
+}
+
+func (f *fakeDead) Add(_ context.Context, e deadevent.Entry) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.entries = append(f.entries, e)
+	return "1-0", nil
+}
+
+func (f *fakeDead) list() []deadevent.Entry {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]deadevent.Entry(nil), f.entries...)
+}
+
 type fixture struct {
 	js      jetstream.JetStream
+	dead    *fakeDead
 	disp    *fakeDispatcher
 	metrics *observability.Metrics
 	stop    func()
@@ -96,11 +117,12 @@ func newFixture(t *testing.T, script ...dispatch.Outcome) *fixture {
 	}
 	disp := &fakeDispatcher{script: script, seen: make(chan struct{}, 100)}
 	metrics := observability.NewMetrics("test")
+	dead := &fakeDead{}
 	c, err := New(Config{URL: s.ClientURL(), Name: "test"}, []routing.NATSSource{{
 		Name: "orders", Tenant: "shop", Stream: "ORDERS", Consumer: "kourrier",
 		FilterSubjects: []string{"orders.>"}, AckWait: 30 * time.Second,
 	}}, Deps{
-		Tenants: tenants, Dispatcher: disp, Metrics: metrics,
+		Tenants: tenants, Dispatcher: disp, DeadLetters: dead, Metrics: metrics,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -112,7 +134,7 @@ func newFixture(t *testing.T, script ...dispatch.Outcome) *fixture {
 	stop := func() { cancel(); <-done }
 	t.Cleanup(stop)
 	waitConsumer(t, js, "ORDERS", "kourrier")
-	return &fixture{js: js, disp: disp, metrics: metrics, stop: stop}
+	return &fixture{js: js, dead: dead, disp: disp, metrics: metrics, stop: stop}
 }
 
 // waitConsumer waits for Kourrier to create its consumer: with the default
@@ -203,10 +225,17 @@ func TestTerminatesInvalidAndRejectedEvents(t *testing.T) {
 	f.publish(t, &nats.Msg{Subject: "orders.paid", Data: []byte("hello")})
 	f.publish(t, &nats.Msg{Subject: "orders.paid", Data: []byte(structured),
 		Header: nats.Header{"Content-Type": []string{cloudevent.ContentTypeStructured}}})
+	// Too large: terminated and recorded without its payload.
+	f.publish(t, &nats.Msg{Subject: "orders.paid", Data: make([]byte, 300<<10)})
 	f.waitDispatched(t, 1)
 	info := f.waitSettled(t)
-	if info.Delivered.Consumer != 2 || info.NumRedelivered != 0 || f.disp.count() != 1 {
+	if info.Delivered.Consumer != 3 || info.NumRedelivered != 0 || f.disp.count() != 1 {
 		t.Fatalf("terminated messages must not be redelivered: %+v, dispatched %d", info, f.disp.count())
+	}
+	dead := f.dead.list()
+	if len(dead) != 2 || dead[0].Reason != deadevent.Invalid || string(dead[0].Event) != "hello" ||
+		dead[0].Tenant != "shop" || dead[1].Event != nil || !strings.Contains(dead[1].Detail, "exceeds") {
+		t.Fatalf("unexpected dead entries %+v", dead)
 	}
 }
 
@@ -263,5 +292,29 @@ func TestRebindsDeletedConsumer(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("consumer was not rebound after deletion")
 		}
+	}
+}
+
+func TestIncompatibleConsumerError(t *testing.T) {
+	s := runServer(t)
+	nc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	js, _ := jetstream.New(nc)
+	ctx := context.Background()
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "ORDERS", Subjects: []string{"orders.>"}}); err != nil {
+		t.Fatal(err)
+	}
+	// Created by someone else with DeliverAll: Kourrier (DeliverNew) cannot update it.
+	if _, err := js.CreateConsumer(ctx, "ORDERS", jetstream.ConsumerConfig{Durable: "kourrier", AckPolicy: jetstream.AckExplicitPolicy}); err != nil {
+		t.Fatal(err)
+	}
+	c := &Consumer{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	_, _, err = c.consume(ctx, js, routing.NATSSource{Name: "orders", Stream: "ORDERS", Consumer: "kourrier",
+		AckWait: 30 * time.Second, DeliverPolicy: routing.DeliverNew}, nil, c.logger, signals{})
+	if err == nil || !strings.Contains(err.Error(), "bind: true") {
+		t.Fatalf("expected an explicit hint, got %v", err)
 	}
 }

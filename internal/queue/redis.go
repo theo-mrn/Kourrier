@@ -56,7 +56,15 @@ type RedisConfig struct {
 	ReclaimInterval time.Duration
 	// DeadLetterMaxLen caps the dead-letter stream, approximately (default 10000).
 	DeadLetterMaxLen int64
+	// WaitReplicas, when > 0, makes EnqueueAtomic wait until that many
+	// replicas acknowledged the write (Redis WAIT), up to WaitTimeout.
+	WaitReplicas int
+	WaitTimeout  time.Duration
 }
+
+// ErrNotReplicated means the write reached the primary but not enough
+// replicas in time. The caller retries; idempotency absorbs the repeat.
+var ErrNotReplicated = errors.New("queue: write not acknowledged by enough replicas")
 
 func (c *RedisConfig) defaults() {
 	if c.Prefix == "" {
@@ -170,13 +178,39 @@ func (q *RedisStreams) EnqueueAtomic(ctx context.Context, job *Job, guard *Write
 		args = append(args, w.Value, ttl)
 	}
 	prev, err := enqueueAtomicScript.Run(ctx, q.rdb, keys, args...).Text()
-	if errors.Is(err, redis.Nil) {
-		return nil, nil
-	}
-	if err != nil {
+	switch {
+	case errors.Is(err, redis.Nil):
+		prev = ""
+	case err != nil:
 		return nil, fmt.Errorf("queue: enqueue: %w", err)
 	}
+	// Also when the guard already existed: the earlier write may not have
+	// been replicated yet either.
+	if err := q.waitReplicas(ctx); err != nil {
+		return nil, err
+	}
+	if prev == "" {
+		return nil, nil
+	}
 	return []byte(prev), nil
+}
+
+func (q *RedisStreams) waitReplicas(ctx context.Context) error {
+	if q.cfg.WaitReplicas <= 0 {
+		return nil
+	}
+	timeout := q.cfg.WaitTimeout
+	if timeout <= 0 {
+		timeout = 500 * time.Millisecond
+	}
+	n, err := q.rdb.Do(ctx, "WAIT", q.cfg.WaitReplicas, timeout.Milliseconds()).Int64()
+	if err != nil {
+		return fmt.Errorf("queue: wait replicas: %w", err)
+	}
+	if n < int64(q.cfg.WaitReplicas) {
+		return fmt.Errorf("%w (%d of %d)", ErrNotReplicated, n, q.cfg.WaitReplicas)
+	}
+	return nil
 }
 
 func (q *RedisStreams) Receive(ctx context.Context) (*Delivery, error) {

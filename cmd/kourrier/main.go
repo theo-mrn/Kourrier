@@ -3,9 +3,11 @@
 // Usage:
 //
 //	kourrier [serve]               run the service (API and/or workers, see KOURRIER_MODE)
-//	kourrier keygen                generate an API key and its SHA-256 digest
+//	kourrier keygen [-scopes S]    generate an API key and its SHA-256 digest
 //	kourrier dlq list [-n N]       list jobs in the dead-letter queue
 //	kourrier dlq replay [-n N]     re-enqueue jobs from the dead-letter queue
+//	kourrier events list|replay|delete
+//	                               inspect and replay the event dead-letter queue
 //	kourrier routes check [-tenants FILE] ROUTES
 //	                               validate a routes file (for CI)
 //	kourrier routes test -tenant ID [-tenants FILE] -event EVENT ROUTES
@@ -23,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -52,18 +55,20 @@ func run(args []string, stdout io.Writer) error {
 	case "serve":
 		return serve()
 	case "keygen":
-		return keygen(stdout)
+		return keygen(args, stdout)
 	case "dlq":
 		return dlq(args, stdout)
 	case "routes":
 		return routes(args, stdout)
+	case "events":
+		return events(args, stdout)
 	case "healthcheck":
 		return healthcheck(args)
 	case "version", "--version", "-v":
 		fmt.Fprintln(stdout, version)
 		return nil
 	case "help", "--help", "-h":
-		fmt.Fprintln(stdout, "usage: kourrier [serve|keygen|dlq list|dlq replay|routes check|routes test|healthcheck|version]")
+		fmt.Fprintln(stdout, "usage: kourrier [serve|keygen|dlq list|dlq replay|events list|events replay|events delete|routes check|routes test|healthcheck|version]")
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q (see kourrier help)", cmd)
@@ -81,13 +86,32 @@ func serve() error {
 	return app.Run(ctx, cfg, version, logger)
 }
 
-func keygen(w io.Writer) error {
+func keygen(args []string, w io.Writer) error {
+	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
+	fs.SetOutput(w)
+	scopes := fs.String("scopes", "", "comma-separated scopes: emails, events (default: both)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	var list []string
+	for _, s := range strings.Split(*scopes, ",") {
+		switch s = strings.TrimSpace(s); s {
+		case "":
+		case tenant.ScopeEmails, tenant.ScopeEvents:
+			list = append(list, s)
+		default:
+			return fmt.Errorf("unknown scope %q (emails, events)", s)
+		}
+	}
 	key, digest, err := tenant.GenerateKey()
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "API key (give it to the client application, it is shown only once):\n  %s\n\n", key)
 	fmt.Fprintf(w, "Digest (put it in the tenants file):\n  api_keys:\n    - sha256: %s\n", digest)
+	if len(list) > 0 {
+		fmt.Fprintf(w, "      scopes: [%s]\n", strings.Join(list, ", "))
+	}
 	return nil
 }
 

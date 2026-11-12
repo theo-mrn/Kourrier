@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -223,5 +224,20 @@ func TestEnqueueAtomic(t *testing.T) {
 	}
 	if _, err := q.EnqueueAtomic(ctx, job("4"), nil, Write{Key: "{kourrier}:x", Value: []byte("v")}); err == nil {
 		t.Fatal("a key without TTL must be refused")
+	}
+}
+
+func TestEnqueueAtomicWaitsForReplicas(t *testing.T) {
+	_, rdb := setup(t)
+	q, err := NewRedisStreams(context.Background(), rdb, RedisConfig{
+		Consumer: "c", WaitReplicas: 1, WaitTimeout: 10 * time.Millisecond,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// miniredis has no replica: WAIT acknowledges 0 of 1.
+	_, err = q.EnqueueAtomic(context.Background(), job("1"), nil)
+	if !errors.Is(err, ErrNotReplicated) {
+		t.Fatalf("err = %v, want ErrNotReplicated", err)
 	}
 }

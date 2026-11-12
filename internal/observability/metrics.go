@@ -45,6 +45,8 @@ type Metrics struct {
 	EventRoutes         *prometheus.CounterVec
 	EventDispatch       *prometheus.HistogramVec
 	EventsBackpressured prometheus.Gauge
+	EventsDeadLettered  *prometheus.CounterVec
+	DeadEvents          prometheus.Gauge
 	EventSourceUp       *prometheus.GaugeVec
 }
 
@@ -125,7 +127,7 @@ func NewMetrics(version string) *Metrics {
 	}, []string{"source", "outcome"})
 	m.EventRoutes = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Name: "event_routes_total",
-		Help: "Route evaluations that matched an event, by outcome (queued, replayed, rejected, failed).",
+		Help: "Route evaluations that matched an event, by outcome (queued, replayed, rejected, failed, throttled).",
 	}, []string{"tenant", "route", "outcome"})
 	m.EventDispatch = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: namespace, Name: "event_dispatch_duration_seconds",
@@ -135,6 +137,14 @@ func NewMetrics(version string) *Metrics {
 	m.EventsBackpressured = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: namespace, Name: "events_backpressure",
 		Help: "1 while event ingestion is paused because the e-mail queue is above its limit.",
+	})
+	m.EventsDeadLettered = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace, Name: "events_dead_lettered_total",
+		Help: "Events kept in the event dead-letter queue, by source and reason (rejected, partial, unrouted, invalid).",
+	}, []string{"source", "reason"})
+	m.DeadEvents = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace, Name: "dead_events",
+		Help: "Events waiting in the event dead-letter queue.",
 	})
 	m.EventSourceUp = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace, Name: "event_source_up",
@@ -148,6 +158,7 @@ func NewMetrics(version string) *Metrics {
 		m.EmailsSent, m.EmailsFailed, m.JobRetries, m.SendDuration, m.DeliveryLatency,
 		m.TemplateRender, m.TemplateCache, m.RateLimitWait, m.QueueDepth, m.WorkersBusy,
 		m.EventsReceived, m.EventRoutes, m.EventDispatch, m.EventsBackpressured, m.EventSourceUp,
+		m.EventsDeadLettered, m.DeadEvents,
 	} {
 		f(c)
 	}

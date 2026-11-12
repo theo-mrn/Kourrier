@@ -6,10 +6,14 @@ import (
 	"os"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/theo-mrn/kourrier/internal/config"
+	"github.com/theo-mrn/kourrier/internal/deadevent"
 	"github.com/theo-mrn/kourrier/internal/dispatch"
 	"github.com/theo-mrn/kourrier/internal/observability"
 	"github.com/theo-mrn/kourrier/internal/queue"
+	"github.com/theo-mrn/kourrier/internal/ratelimit"
 	"github.com/theo-mrn/kourrier/internal/routing"
 	"github.com/theo-mrn/kourrier/internal/source/natsjs"
 	"github.com/theo-mrn/kourrier/internal/submit"
@@ -29,8 +33,8 @@ type eventIngress struct {
 	run []func(context.Context) error
 }
 
-func newEventIngress(cfg *config.Config, tenants *tenant.Registry, submitter *submit.Service, q queue.Queue,
-	metrics *observability.Metrics, logger *slog.Logger,
+func newEventIngress(cfg *config.Config, rdb redis.UniversalClient, tenants *tenant.Registry, submitter *submit.Service,
+	q queue.Queue, metrics *observability.Metrics, logger *slog.Logger,
 ) (eventIngress, error) {
 	var in eventIngress
 	if cfg.Events.RoutesFile == "" {
@@ -48,8 +52,18 @@ func newEventIngress(cfg *config.Config, tenants *tenant.Registry, submitter *su
 		gate = g
 		in.run = append(in.run, func(ctx context.Context) error { g.Run(ctx); return nil })
 	}
+	dead := NewDeadEvents(cfg, rdb)
+	in.run = append(in.run, func(ctx context.Context) error { collectDeadEvents(ctx, dead, metrics, logger); return nil })
+	var strict []string
+	for _, src := range routes.NATS {
+		if src.OnUnrouted == routing.UnroutedDeadLetter {
+			strict = append(strict, src.Name)
+		}
+	}
 	in.dispatcher = dispatch.New(dispatch.Deps{
-		Router: routes.Router, Submitter: submitter, Gate: gate, Metrics: metrics, Logger: logger,
+		Router: routes.Router, Submitter: submitter, Gate: gate, DeadLetters: dead, DeadLetterUnrouted: strict,
+		Limiter: ratelimit.NewKeyed(rdb, cfg.Redis.KeyPrefix), Limits: routes.Limits,
+		Metrics: metrics, Logger: logger,
 	})
 
 	if len(routes.NATS) > 0 {
@@ -57,12 +71,39 @@ func newEventIngress(cfg *config.Config, tenants *tenant.Registry, submitter *su
 		n := cfg.Events.NATS
 		consumer, err := natsjs.New(natsjs.Config{
 			URL: n.URL, Name: "kourrier-" + name, CredsFile: n.CredsFile, NKeyFile: n.NKeyFile,
-			CAFile: n.TLSCAFile, CertFile: n.TLSCertFile, KeyFile: n.TLSKeyFile,
-		}, routes.NATS, natsjs.Deps{Tenants: tenants, Dispatcher: in.dispatcher, Metrics: metrics, Logger: logger})
+			CAFile: n.TLSCAFile, CertFile: n.TLSCertFile, KeyFile: n.TLSKeyFile, MaxBytes: cfg.Events.MaxBytes,
+		}, routes.NATS, natsjs.Deps{
+			Tenants: tenants, Dispatcher: in.dispatcher, DeadLetters: dead, Metrics: metrics, Logger: logger,
+		})
 		if err != nil {
 			return in, err
 		}
 		in.run = append(in.run, consumer.Run)
 	}
 	return in, nil
+}
+
+// NewDeadEvents creates the event dead-letter queue.
+func NewDeadEvents(cfg *config.Config, rdb redis.UniversalClient) *deadevent.Store {
+	return deadevent.NewStore(rdb, cfg.Redis.KeyPrefix, cfg.Events.DeadLetterMaxLen).
+		WithReplication(cfg.Redis.WaitReplicas, cfg.Redis.WaitTimeout)
+}
+
+// collectDeadEvents publishes the size of the event dead-letter queue.
+func collectDeadEvents(ctx context.Context, dead *deadevent.Store, m *observability.Metrics, logger *slog.Logger) {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for {
+		n, err := dead.Len(ctx)
+		if err == nil {
+			m.DeadEvents.Set(float64(n))
+		} else if ctx.Err() == nil {
+			logger.Warn("cannot read the event dead-letter queue size", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }

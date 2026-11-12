@@ -42,6 +42,7 @@ type Server struct {
 	metrics   *observability.Metrics
 	logger    *slog.Logger
 	maxBody   int64
+	maxEvent  int64
 }
 
 // Deps groups the collaborators of a Server.
@@ -56,6 +57,8 @@ type Deps struct {
 	Logger  *slog.Logger
 	// MaxBodyBytes limits request bodies (default 1 MiB).
 	MaxBodyBytes int64
+	// MaxEventBytes limits POST /v1/events bodies (default 256 KiB).
+	MaxEventBytes int64
 }
 
 // New creates a Server.
@@ -63,21 +66,27 @@ func New(d Deps) *Server {
 	if d.MaxBodyBytes <= 0 {
 		d.MaxBodyBytes = 1 << 20
 	}
+	if d.MaxEventBytes <= 0 {
+		d.MaxEventBytes = 256 << 10
+	}
 	return &Server{
 		tenants: d.Tenants, submit: d.Submitter, statuses: d.Statuses, templates: d.Templates, events: d.Events,
-		metrics: d.Metrics, logger: d.Logger, maxBody: d.MaxBodyBytes,
+		metrics: d.Metrics, logger: d.Logger, maxBody: d.MaxBodyBytes, maxEvent: d.MaxEventBytes,
 	}
 }
 
 // Handler returns the HTTP handler with its middleware chain.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/emails", s.requireTenant(s.handleSend))
-	mux.HandleFunc("GET /v1/emails/{id}", s.requireTenant(s.handleGet))
-	mux.HandleFunc("GET /v1/templates", s.requireTenant(s.handleListTemplates))
-	mux.HandleFunc("POST /v1/templates/{name}/preview", s.requireTenant(s.handlePreview))
+	mux.HandleFunc("POST /v1/emails", s.requireTenant(tenant.ScopeEmails, s.handleSend))
+	// Any scope may read statuses: event producers follow the e-mails their
+	// events created.
+	mux.HandleFunc("GET /v1/emails/{id}", s.requireTenant("", s.handleGet))
+	// Any scope may read the templates too: event routes choose them as well.
+	mux.HandleFunc("GET /v1/templates", s.requireTenant("", s.handleListTemplates))
+	mux.HandleFunc("POST /v1/templates/{name}/preview", s.requireTenant("", s.handlePreview))
 	if s.events != nil {
-		mux.HandleFunc("POST /v1/events", s.requireTenant(s.handleEvent))
+		mux.HandleFunc("POST /v1/events", s.requireTenant(tenant.ScopeEvents, s.handleEvent))
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusNotFound, "not-found", "no such endpoint")

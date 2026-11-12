@@ -128,12 +128,17 @@ func withRecover(logger *slog.Logger, next http.Handler) http.Handler {
 	})
 }
 
-// requireTenant authenticates the request with a Bearer API key.
-func (s *Server) requireTenant(next http.HandlerFunc) http.HandlerFunc {
+// requireTenant authenticates the request with a Bearer API key that grants
+// scope (any scope when empty).
+func (s *Server) requireTenant(scope string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		key, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		t, found := s.tenants.Authenticate(strings.TrimSpace(key))
-		if !ok || !found {
+		key, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		t, err := s.tenants.Authorize(strings.TrimSpace(key), scope)
+		switch {
+		case errors.Is(err, tenant.ErrForbidden):
+			writeProblem(w, r, http.StatusForbidden, "insufficient-scope", "this API key does not grant the "+scope+" scope")
+			return
+		case err != nil:
 			w.Header().Set("WWW-Authenticate", `Bearer realm="kourrier"`)
 			writeProblem(w, r, http.StatusUnauthorized, "unauthorized", "a valid API key is required")
 			return

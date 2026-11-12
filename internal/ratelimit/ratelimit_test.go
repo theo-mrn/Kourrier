@@ -69,3 +69,24 @@ func TestRedisLimiterHonoursContext(t *testing.T) {
 		t.Fatal("expected context deadline error")
 	}
 }
+
+func TestKeyed(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	k := NewKeyed(rdb, "test")
+	ctx := context.Background()
+	for i := range 3 {
+		if wait, err := k.Allow(ctx, "shop", 1, 3); err != nil || wait != 0 {
+			t.Fatalf("token %d: wait=%v err=%v", i, wait, err)
+		}
+	}
+	wait, err := k.Allow(ctx, "shop", 1, 3)
+	if err != nil || wait <= 0 || wait > time.Second {
+		t.Fatalf("burst exhausted: wait=%v err=%v", wait, err)
+	}
+	// Buckets are independent per key.
+	if wait, _ := k.Allow(ctx, "other", 1, 1); wait != 0 {
+		t.Fatalf("other tenant throttled: %v", wait)
+	}
+}

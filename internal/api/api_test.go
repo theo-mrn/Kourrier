@@ -14,11 +14,13 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/theo-mrn/kourrier/internal/deadevent"
 	"github.com/theo-mrn/kourrier/internal/dispatch"
 	"github.com/theo-mrn/kourrier/internal/idempotency"
 	"github.com/theo-mrn/kourrier/internal/mail"
 	"github.com/theo-mrn/kourrier/internal/observability"
 	"github.com/theo-mrn/kourrier/internal/queue"
+	"github.com/theo-mrn/kourrier/internal/ratelimit"
 	"github.com/theo-mrn/kourrier/internal/routing"
 	"github.com/theo-mrn/kourrier/internal/status"
 	"github.com/theo-mrn/kourrier/internal/storage"
@@ -28,8 +30,9 @@ import (
 )
 
 const (
-	ynerKey  = "kr_yner-test-key"
-	otherKey = "kr_other-test-key"
+	ynerKey   = "kr_yner-test-key"
+	otherKey  = "kr_other-test-key"
+	eventsKey = "kr_yner-events-only"
 )
 
 type fixture struct {
@@ -81,8 +84,11 @@ func newFixtureWith(t *testing.T, store storage.Provider, routes string) *fixtur
 
 	tenants, err := tenant.NewRegistry(
 		&tenant.Tenant{
-			ID:             "yner",
-			APIKeys:        []tenant.APIKey{{SHA256: tenant.HashKey(ynerKey)}},
+			ID: "yner",
+			APIKeys: []tenant.APIKey{
+				{SHA256: tenant.HashKey(ynerKey)},
+				{SHA256: tenant.HashKey(eventsKey), Scopes: []string{tenant.ScopeEvents}},
+			},
 			DefaultSender:  mail.Address{Email: "no-reply@yner.fr", Name: "Yner"},
 			AllowedSenders: []string{"no-reply@yner.fr", "*@news.yner.fr"},
 		},
@@ -116,17 +122,22 @@ func newFixtureWith(t *testing.T, store storage.Provider, routes string) *fixtur
 		if err != nil {
 			t.Fatal(err)
 		}
-		events = dispatch.New(dispatch.Deps{Router: cfg.Router, Submitter: submitter, Metrics: metrics, Logger: logger})
+		events = dispatch.New(dispatch.Deps{
+			Router: cfg.Router, Submitter: submitter, Metrics: metrics, Logger: logger,
+			DeadLetters: deadevent.NewStore(rdb, "kourrier", 100),
+			Limiter:     ratelimit.NewKeyed(rdb, "kourrier"), Limits: cfg.Limits,
+		})
 	}
 	srv := New(Deps{
-		Tenants:      tenants,
-		Submitter:    submitter,
-		Statuses:     statuses,
-		Templates:    renderer,
-		Events:       events,
-		Metrics:      metrics,
-		Logger:       logger,
-		MaxBodyBytes: 64 << 10,
+		Tenants:       tenants,
+		Submitter:     submitter,
+		Statuses:      statuses,
+		Templates:     renderer,
+		Events:        events,
+		Metrics:       metrics,
+		Logger:        logger,
+		MaxBodyBytes:  64 << 10,
+		MaxEventBytes: 64 << 10,
 	})
 	return &fixture{handler: srv.Handler(), queue: q, mr: mr}
 }

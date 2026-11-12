@@ -63,7 +63,7 @@ Les identifiants sont des UUIDv7 (triés chronologiquement).
 
 ## `POST /v1/events`
 
-Sink CloudEvents 1.0 (modes *structured* et *binary*), disponible quand un fichier de routes est configuré. L'événement est évalué avec les routes du tenant de la clé API. La référence complète est dans [events.md](events.md#transport-http--post-v1events).
+Sink CloudEvents 1.0 (modes *structured* et *binary*), disponible quand un fichier de routes est configuré. Il requiert une clé portant le scope `events`. L'événement est évalué avec les routes du tenant de la clé API. La référence complète est dans [events.md](events.md#transport-http--post-v1events).
 
 ```json
 {
@@ -73,7 +73,7 @@ Sink CloudEvents 1.0 (modes *structured* et *binary*), disponible quand un fichi
 }
 ```
 
-`outcome` vaut `accepted` ou `ignored` (aucune route, `emails` vide). `replayed: true` sur un e-mail signale un événement déjà reçu : aucun nouvel e-mail n'a été créé. Les identifiants se suivent avec `GET /v1/emails/{id}`.
+`outcome` vaut `accepted` ou `ignored` (aucune route, `emails` vide). Si certaines routes ont échoué, `errors` les détaille et `dead_letter_id` identifie l'événement conservé pour rejeu (`kourrier events replay`). `replayed: true` sur un e-mail signale un événement déjà reçu : aucun nouvel e-mail n'a été créé. Les identifiants se suivent avec `GET /v1/emails/{id}`.
 
 ## `GET /v1/emails/{id}`
 
@@ -147,6 +147,8 @@ Les erreurs suivent la [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) (`appl
 | <a id="idempotency-key"></a>`idempotency-key` | 400 | `Idempotency-Key` invalide. |
 | <a id="unauthorized"></a>`unauthorized` | 401 | Clé API absente ou invalide. |
 | <a id="sender-not-allowed"></a>`sender-not-allowed` | 403 | `from` hors des `allowed_senders` du tenant. |
+| <a id="insufficient-scope"></a>`insufficient-scope` | 403 | La clé API ne porte pas le scope requis (`emails` pour `POST /v1/emails`, `events` pour `POST /v1/events`). La lecture des statuts et des templates accepte tous les scopes. |
+| <a id="rate-limited"></a>`rate-limited` | 429 | `POST /v1/events` : limite d'e-mails du tenant atteinte. Réessayer après `Retry-After`. |
 | <a id="not-found"></a>`not-found` | 404 | Route ou e-mail inconnu. |
 | <a id="too-large"></a>`too-large` | 413 | Corps supérieur à `KOURRIER_MAX_BODY_BYTES`. |
 | <a id="validation"></a>`validation` | 422 | Champs invalides (détail dans `errors`). |

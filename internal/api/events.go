@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net/http"
+	"strconv"
 
 	"github.com/theo-mrn/kourrier/internal/cloudevent"
 	"github.com/theo-mrn/kourrier/internal/dispatch"
@@ -27,6 +29,8 @@ type EventResponse struct {
 	Outcome dispatch.Outcome      `json:"outcome"`
 	Emails  []dispatch.Email      `json:"emails"`
 	Errors  []dispatch.RouteError `json:"errors,omitempty"`
+	// DeadLetterID is set when failed routes were kept for replay.
+	DeadLetterID string `json:"dead_letter_id,omitempty"`
 }
 
 // handleEvent is a CloudEvents HTTP sink (structured and binary content
@@ -35,7 +39,7 @@ type EventResponse struct {
 // dead-letter it), 5xx makes the sender retry, after Retry-After.
 func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxBody))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxEvent))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
@@ -69,11 +73,13 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 		if rep.Emails == nil {
 			rep.Emails = []dispatch.Email{}
 		}
-		writeJSON(w, http.StatusAccepted, EventResponse{Outcome: rep.Outcome, Emails: rep.Emails, Errors: rep.Errors})
+		writeJSON(w, http.StatusAccepted, EventResponse{
+			Outcome: rep.Outcome, Emails: rep.Emails, Errors: rep.Errors, DeadLetterID: rep.DeadLetterID,
+		})
 	case dispatch.Rejected:
 		p := &Problem{
 			Type: problemBase + "event-rejected", Title: "Event rejected", Status: http.StatusUnprocessableEntity,
-			Detail: "no e-mail could be built from this event",
+			Detail: "no e-mail could be built from this event", DeadLetterID: rep.DeadLetterID,
 		}
 		if rep.Err != nil {
 			p.Detail = rep.Err.Error()
@@ -83,11 +89,16 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 		}
 		writeProblemDetails(w, r, p)
 	default: // dispatch.Retry
-		if errors.Is(rep.Err, dispatch.ErrBackpressure) {
+		switch {
+		case errors.Is(rep.Err, dispatch.ErrTenantRateLimited):
+			// 429: the tenant, not the service, is over its limit.
+			w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(rep.RetryAfter.Seconds())))))
+			writeProblem(w, r, http.StatusTooManyRequests, "rate-limited", rep.Err.Error())
+		case errors.Is(rep.Err, dispatch.ErrBackpressure):
 			w.Header().Set("Retry-After", "30")
 			writeProblem(w, r, http.StatusServiceUnavailable, "backpressure", rep.Err.Error())
-			return
+		default:
+			s.unavailable(w, r, "dispatch event", rep.Err)
 		}
-		s.unavailable(w, r, "dispatch event", rep.Err)
 	}
 }

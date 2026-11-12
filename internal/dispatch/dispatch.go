@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/theo-mrn/kourrier/internal/cloudevent"
+	"github.com/theo-mrn/kourrier/internal/deadevent"
 	"github.com/theo-mrn/kourrier/internal/mail"
 	"github.com/theo-mrn/kourrier/internal/observability"
 	"github.com/theo-mrn/kourrier/internal/routing"
@@ -44,9 +45,14 @@ const (
 	Retry Outcome = "retry"
 )
 
-// ErrBackpressure is the cause of a Retry when the e-mail queue is above its
-// configured depth.
-var ErrBackpressure = errors.New("e-mail queue is full, event ingestion paused")
+var (
+	// ErrBackpressure is the cause of a Retry when the e-mail queue is above
+	// its configured depth.
+	ErrBackpressure = errors.New("e-mail queue is full, event ingestion paused")
+	// ErrTenantRateLimited is the cause of a Retry when the tenant exceeds
+	// its e-mail rate (limits in the routes file).
+	ErrTenantRateLimited = errors.New("tenant e-mail rate exceeded")
+)
 
 // Submitter enqueues e-mail requests. *submit.Service implements it.
 type Submitter interface {
@@ -57,6 +63,21 @@ type Submitter interface {
 type Gate interface {
 	Overloaded() bool
 }
+
+// TenantLimiter takes a token from a per-tenant bucket. *ratelimit.Keyed
+// implements it.
+type TenantLimiter interface {
+	Allow(ctx context.Context, key string, perSecond float64, burst int) (time.Duration, error)
+}
+
+// DeadLetters keeps events that could not be fully processed.
+// *deadevent.Store implements it.
+type DeadLetters interface {
+	Add(ctx context.Context, e deadevent.Entry) (string, error)
+}
+
+// SourceReplay labels replays of dead-lettered events in metrics and logs.
+const SourceReplay = "replay"
 
 // Email is an e-mail queued for an event.
 type Email struct {
@@ -79,15 +100,25 @@ type Report struct {
 	// Err is the cause of a Retry, or of a Rejected outcome when the event
 	// payload itself is unusable.
 	Err error
+	// DeadLetterID is set when the event was kept in the event dead-letter
+	// queue (rejected, partially failed, or unrouted on a strict source).
+	DeadLetterID string
+	// RetryAfter suggests when to redeliver a Retry; 0 lets the transport
+	// choose.
+	RetryAfter time.Duration
 }
 
 // Dispatcher routes events and submits the resulting e-mails.
 type Dispatcher struct {
-	router  *routing.Router
-	submit  Submitter
-	gate    Gate
-	metrics *observability.Metrics
-	logger  *slog.Logger
+	router      *routing.Router
+	submit      Submitter
+	gate        Gate
+	deadLetters DeadLetters
+	strict      map[string]bool
+	limiter     TenantLimiter
+	limits      routing.Limits
+	metrics     *observability.Metrics
+	logger      *slog.Logger
 }
 
 // Deps groups the collaborators of a Dispatcher. Gate is optional.
@@ -95,20 +126,51 @@ type Deps struct {
 	Router    *routing.Router
 	Submitter Submitter
 	Gate      Gate
-	Metrics   *observability.Metrics
-	Logger    *slog.Logger
+	// DeadLetters is optional. Without it, rejected events are only logged.
+	DeadLetters DeadLetters
+	// DeadLetterUnrouted lists the sources whose unrouted events are kept
+	// in the dead-letter queue instead of being ignored.
+	DeadLetterUnrouted []string
+	// Limiter and Limits cap the e-mails each tenant's events may create.
+	Limiter TenantLimiter
+	Limits  routing.Limits
+	Metrics *observability.Metrics
+	Logger  *slog.Logger
 }
 
 // New creates a Dispatcher.
 func New(d Deps) *Dispatcher {
-	return &Dispatcher{router: d.Router, submit: d.Submitter, gate: d.Gate, metrics: d.Metrics, logger: d.Logger}
+	strict := map[string]bool{SourceReplay: true}
+	for _, s := range d.DeadLetterUnrouted {
+		strict[s] = true
+	}
+	return &Dispatcher{
+		router: d.Router, submit: d.Submitter, gate: d.Gate, deadLetters: d.DeadLetters, strict: strict,
+		limiter: d.Limiter, limits: d.Limits,
+		metrics: d.Metrics, logger: d.Logger,
+	}
 }
 
 // Dispatch routes e with the routes of tenant t. source names the transport
 // for metrics and logs ("http" or a NATS source name).
 func (d *Dispatcher) Dispatch(ctx context.Context, source string, t *tenant.Tenant, e *cloudevent.Event) Report {
+	return d.run(ctx, source, t, e, nil)
+}
+
+// Replay dispatches a dead-lettered event again, restricted to routes (all
+// routes when empty). Routes that succeeded before are deduplicated by
+// idempotency anyway; restricting them avoids resending after the
+// idempotency TTL. If the event still fails, it is dead-lettered again.
+func (d *Dispatcher) Replay(ctx context.Context, t *tenant.Tenant, e *cloudevent.Event, routes []string) Report {
+	return d.run(ctx, SourceReplay, t, e, routes)
+}
+
+func (d *Dispatcher) run(ctx context.Context, source string, t *tenant.Tenant, e *cloudevent.Event, only []string) Report {
 	start := time.Now()
-	rep := d.dispatch(ctx, t, e)
+	rep := d.dispatch(ctx, t, e, only)
+	if rep.Outcome != Retry {
+		d.deadLetter(ctx, source, t, e, &rep)
+	}
 	d.metrics.EventDispatch.WithLabelValues(source).Observe(time.Since(start).Seconds())
 	d.metrics.EventsReceived.WithLabelValues(source, string(rep.Outcome)).Inc()
 
@@ -118,17 +180,59 @@ func (d *Dispatcher) Dispatch(ctx context.Context, source string, t *tenant.Tena
 	case Ignored:
 		log.DebugContext(ctx, "event ignored: no matching route")
 	case Accepted:
-		log.InfoContext(ctx, "event dispatched", "emails", len(rep.Emails), "route_errors", len(rep.Errors))
+		log.InfoContext(ctx, "event dispatched", "emails", len(rep.Emails), "route_errors", rep.Errors, "dead_letter_id", rep.DeadLetterID)
 	case Rejected:
-		log.WarnContext(ctx, "event rejected", "error", rep.Err, "route_errors", rep.Errors)
+		log.WarnContext(ctx, "event rejected", "error", rep.Err, "route_errors", rep.Errors, "dead_letter_id", rep.DeadLetterID)
 	case Retry:
 		log.WarnContext(ctx, "event dispatch failed, it will be redelivered", "error", rep.Err)
 	}
 	return rep
 }
 
-func (d *Dispatcher) dispatch(ctx context.Context, t *tenant.Tenant, e *cloudevent.Event) Report {
-	results, err := d.router.Route(t.ID, e)
+// deadLetter keeps the event when part of it was not processed. If the event
+// cannot be stored, the outcome becomes Retry: the broker keeps the event
+// rather than Kourrier losing it.
+func (d *Dispatcher) deadLetter(ctx context.Context, source string, t *tenant.Tenant, e *cloudevent.Event, rep *Report) {
+	var reason deadevent.Reason
+	switch {
+	case rep.Outcome == Rejected:
+		reason = deadevent.Rejected
+	case rep.Outcome == Accepted && len(rep.Errors) > 0:
+		reason = deadevent.Partial
+	case rep.Outcome == Ignored && d.strict[source]:
+		reason = deadevent.Unrouted
+	default:
+		return
+	}
+	if d.deadLetters == nil {
+		return
+	}
+	entry := deadevent.Entry{Tenant: t.ID, Source: source, Reason: reason}
+	for _, re := range rep.Errors {
+		entry.Routes = append(entry.Routes, re.Route)
+	}
+	switch {
+	case rep.Err != nil:
+		entry.Detail = rep.Err.Error()
+	case len(rep.Errors) > 0:
+		entry.Detail = rep.Errors[0].Route + ": " + rep.Errors[0].Detail
+	default:
+		entry.Detail = "no route matches type " + e.Type
+	}
+	raw, err := e.MarshalStructured()
+	if err == nil {
+		entry.Event = raw
+		rep.DeadLetterID, err = d.deadLetters.Add(ctx, entry)
+	}
+	if err != nil {
+		*rep = Report{Outcome: Retry, Err: fmt.Errorf("%w: cannot keep the event in the dead-letter queue: %w", submit.ErrUnavailable, err)}
+		return
+	}
+	d.metrics.EventsDeadLettered.WithLabelValues(source, string(reason)).Inc()
+}
+
+func (d *Dispatcher) dispatch(ctx context.Context, t *tenant.Tenant, e *cloudevent.Event, only []string) Report {
+	results, err := d.router.RouteOnly(t.ID, e, only)
 	if err != nil {
 		return Report{Outcome: Rejected, Err: err}
 	}
@@ -142,12 +246,27 @@ func (d *Dispatcher) dispatch(ctx context.Context, t *tenant.Tenant, e *cloudeve
 	}
 
 	var rep Report
+	limit := d.limits.For(t.ID)
 	for _, res := range results {
 		route := res.Route.Name
 		if res.Err != nil {
 			rep.Errors = append(rep.Errors, RouteError{Route: route, Detail: res.Err.Error()})
 			d.metrics.EventRoutes.WithLabelValues(t.ID, route, "rejected").Inc()
 			continue
+		}
+		if d.limiter != nil && limit.EmailsPerSecond > 0 {
+			wait, err := d.limiter.Allow(ctx, t.ID, limit.EmailsPerSecond, max(limit.Burst, 1))
+			if err != nil {
+				rep.Err = fmt.Errorf("%w: %w", submit.ErrUnavailable, err)
+				break
+			}
+			if wait > 0 {
+				// The remaining routes run on redelivery; the ones already
+				// submitted are deduplicated by idempotency.
+				d.metrics.EventRoutes.WithLabelValues(t.ID, route, "throttled").Inc()
+				rep.Err, rep.RetryAfter = ErrTenantRateLimited, wait
+				break
+			}
 		}
 		key := idempotencyKey(route, e)
 		out, err := d.submit.Submit(ctx, &submit.Request{

@@ -96,7 +96,30 @@ type Result struct {
 // false are left out; an empty result means no route matched. The returned
 // error is only set when the event payload itself cannot be decoded.
 func (r *Router) Route(tenant string, e *cloudevent.Event) ([]Result, error) {
-	candidates := r.index[tenant][e.Type]
+	return r.route(tenant, e, nil)
+}
+
+// RouteOnly is Route restricted to the named routes. It is used to replay
+// only the routes that failed for a dead-lettered event; an empty list means
+// every route.
+func (r *Router) RouteOnly(tenant string, e *cloudevent.Event, names []string) ([]Result, error) {
+	if len(names) == 0 {
+		return r.route(tenant, e, nil)
+	}
+	keep := make(map[string]bool, len(names))
+	for _, n := range names {
+		keep[n] = true
+	}
+	return r.route(tenant, e, keep)
+}
+
+func (r *Router) route(tenant string, e *cloudevent.Event, keep map[string]bool) ([]Result, error) {
+	var candidates []*Route
+	for _, rt := range r.index[tenant][e.Type] {
+		if keep == nil || keep[rt.Name] {
+			candidates = append(candidates, rt)
+		}
+	}
 	if len(candidates) == 0 {
 		return nil, nil
 	}

@@ -9,6 +9,7 @@
 //	  - id: yner
 //	    api_keys:
 //	      - sha256: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+//	        scopes: [events]          # optional, default [emails, events]
 //	    default_sender: { email: no-reply@yner.fr, name: Yner }
 //	    allowed_senders: ["no-reply@yner.fr", "*@notifications.yner.fr"]
 //
@@ -43,10 +44,20 @@ type Tenant struct {
 	AllowedSenders []string     `yaml:"allowed_senders"`
 }
 
+// Scopes limit what an API key may do (least privilege). A key given to an
+// event producer only needs ScopeEvents: if it leaks, it cannot be used to
+// send arbitrary e-mails. Reading e-mail statuses is allowed for any scope.
+const (
+	ScopeEmails = "emails" // POST /v1/emails
+	ScopeEvents = "events" // POST /v1/events
+)
+
 // APIKey holds the hex-encoded SHA-256 digest of a key. A tenant may have
 // several keys to allow zero-downtime rotation.
 type APIKey struct {
 	SHA256 string `yaml:"sha256"`
+	// Scopes defaults to every scope when empty, for compatibility.
+	Scopes []string `yaml:"scopes"`
 }
 
 // CanSendFrom reports whether the tenant may use email as sender. Patterns are
@@ -69,8 +80,20 @@ func (t *Tenant) CanSendFrom(email string) bool {
 // Registry indexes tenants by ID and by API key digest.
 type Registry struct {
 	byID  map[string]*Tenant
-	byKey map[[sha256.Size]byte]*Tenant
+	byKey map[[sha256.Size]byte]keyEntry
 }
+
+type keyEntry struct {
+	tenant *Tenant
+	scopes map[string]bool
+}
+
+var (
+	// ErrUnauthenticated means the key is missing or unknown.
+	ErrUnauthenticated = errors.New("unknown API key")
+	// ErrForbidden means the key is valid but lacks the required scope.
+	ErrForbidden = errors.New("API key not allowed for this operation")
+)
 
 type file struct {
 	Tenants []*Tenant `yaml:"tenants"`
@@ -98,7 +121,7 @@ func Parse(data []byte) (*Registry, error) {
 func NewRegistry(tenants ...*Tenant) (*Registry, error) {
 	r := &Registry{
 		byID:  make(map[string]*Tenant, len(tenants)),
-		byKey: make(map[[sha256.Size]byte]*Tenant),
+		byKey: make(map[[sha256.Size]byte]keyEntry),
 	}
 	var errs []error
 	for i, t := range tenants {
@@ -127,10 +150,20 @@ func NewRegistry(tenants ...*Tenant) (*Registry, error) {
 			}
 			digest := [sha256.Size]byte(raw)
 			if other, dup := r.byKey[digest]; dup {
-				errs = append(errs, fmt.Errorf("tenant %q: api key already used by tenant %q", t.ID, other.ID))
+				errs = append(errs, fmt.Errorf("tenant %q: api key already used by tenant %q", t.ID, other.tenant.ID))
 				continue
 			}
-			r.byKey[digest] = t
+			scopes := map[string]bool{}
+			if len(k.Scopes) == 0 {
+				scopes[ScopeEmails], scopes[ScopeEvents] = true, true
+			}
+			for _, sc := range k.Scopes {
+				if sc != ScopeEmails && sc != ScopeEvents {
+					errs = append(errs, fmt.Errorf("tenant %q: api_keys[%d]: unknown scope %q (emails, events)", t.ID, j, sc))
+				}
+				scopes[sc] = true
+			}
+			r.byKey[digest] = keyEntry{tenant: t, scopes: scopes}
 		}
 		r.byID[t.ID] = t
 	}
@@ -143,11 +176,24 @@ func NewRegistry(tenants ...*Tenant) (*Registry, error) {
 // Authenticate returns the tenant owning key. Keys are compared through their
 // SHA-256 digest, so lookup time does not leak information about valid keys.
 func (r *Registry) Authenticate(key string) (*Tenant, bool) {
+	t, err := r.Authorize(key, "")
+	return t, err == nil
+}
+
+// Authorize authenticates key and checks that it grants scope (any scope
+// when empty). It returns ErrUnauthenticated or ErrForbidden.
+func (r *Registry) Authorize(key, scope string) (*Tenant, error) {
 	if key == "" {
-		return nil, false
+		return nil, ErrUnauthenticated
 	}
-	t, ok := r.byKey[sha256.Sum256([]byte(key))]
-	return t, ok
+	e, ok := r.byKey[sha256.Sum256([]byte(key))]
+	if !ok {
+		return nil, ErrUnauthenticated
+	}
+	if scope != "" && !e.scopes[scope] {
+		return e.tenant, ErrForbidden
+	}
+	return e.tenant, nil
 }
 
 // Get returns a tenant by ID.

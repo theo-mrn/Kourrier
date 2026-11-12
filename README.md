@@ -27,10 +27,10 @@ routes:
 
 ## Fonctionnalités
 
-- **Piloté par les événements** : consommateur NATS JetStream (pull, ack explicite) et sink HTTP CloudEvents. Les routes [CEL](https://cel.dev) (le langage de Kubernetes) sont compilées au démarrage, avec un coût borné, et testables en CI (`kourrier routes test`). Compatible avec le pattern *outbox*. Voir [docs/events.md](docs/events.md).
+- **Piloté par les événements** : consommateur NATS JetStream (pull, ack explicite) et sink HTTP CloudEvents. Les routes [CEL](https://cel.dev) (le langage de Kubernetes) sont compilées au démarrage, avec un coût borné, et testables en CI (`kourrier routes test`). Compatible avec le pattern *outbox*. Aucun événement n'est perdu en silence : les échecs sont conservés et rejouables (`kourrier events replay`). Voir [docs/events.md](docs/events.md).
 - **Asynchrone et fiable** : Redis Streams avec consumer groups, livraison au moins une fois, reprise des jobs d'un Pod mort, retries avec backoff exponentiel, dead-letter queue rejouable.
 - **Agnostique** : drivers `aws-ses`, `smtp`, `console`, `filesystem` derrière une interface unique. Le stockage des templates accepte S3, MinIO, RustFS ou un dossier local.
-- **Sûr par défaut** : le driver par défaut n'envoie rien. Clés API par tenant (seules les empreintes SHA-256 sont stockées), expéditeurs autorisés, en-têtes filtrés, échappement HTML automatique.
+- **Sûr par défaut** : le driver par défaut n'envoie rien. Clés API par tenant avec scopes (`emails`, `events`), dont seules les empreintes SHA-256 sont stockées ; expéditeurs autorisés, limites d'e-mails par tenant, en-têtes filtrés, échappement HTML automatique.
 - **Idempotent** : l'en-tête `Idempotency-Key` côté API et la clé `route + source + id` côté événements évitent les doublons lors des renvois et redélivrances.
 - **Rate limiting distribué** (GCRA sur Redis) : le quota SES est respecté quel que soit le nombre de replicas.
 - **Observabilité native** : métriques Prometheus, logs JSON (adresses masquées), dashboard Grafana et alertes livrés dans le Chart Helm.

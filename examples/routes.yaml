@@ -15,6 +15,14 @@ sources:
       stream: USERS             # must exist: Kourrier never creates streams
       consumer: kourrier        # durable consumer, created or updated at startup
       filter_subjects: ["users.>"]
+      # The subjects are dedicated to Kourrier: an event no route matches is
+      # a mistake (typo in a type, missing route), keep it for inspection.
+      on_unrouted: dead_letter
+
+# E-mails each tenant's events may create per second: one tenant cannot fill
+# the shared queue at the expense of the others.
+limits:
+  default: { emails_per_second: 20, burst: 100 }
 
 routes:
   # Welcome e-mail when a user signs up and verified their address.

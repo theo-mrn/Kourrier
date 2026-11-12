@@ -119,6 +119,9 @@ func ParseNATS(headers map[string][]string, body []byte) (*Event, error) {
 
 // ParseStructured decodes an event in the JSON event format.
 func ParseStructured(body []byte) (*Event, error) {
+	if err := checkJSON(body); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrMalformed, err)
+	}
 	var raw map[string]json.RawMessage
 	dec := json.NewDecoder(bytes.NewReader(body))
 	if err := dec.Decode(&raw); err != nil || raw == nil {
@@ -241,9 +244,11 @@ func build(attrs map[string]string, data json.RawMessage, structured bool) (*Eve
 		if !isJSONMediaType(e.DataContentType) {
 			return nil, fmt.Errorf("%w: datacontenttype %q (only JSON data is accepted)", ErrUnsupported, e.DataContentType)
 		}
-		// In structured mode the JSON decoder already validated data.
-		if !structured && !json.Valid(data) {
-			return nil, fmt.Errorf("%w: data is not valid JSON", ErrMalformed)
+		// In structured mode the whole body was already checked.
+		if !structured {
+			if err := checkJSON(data); err != nil {
+				return nil, fmt.Errorf("%w: data: %w", ErrMalformed, err)
+			}
 		}
 		e.Data = data
 	}

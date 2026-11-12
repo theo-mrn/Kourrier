@@ -83,3 +83,29 @@ func (l *Redis) Wait(ctx context.Context) error {
 		}
 	}
 }
+
+// Keyed is a distributed GCRA limiter with one bucket per key (e.g. one per
+// tenant), sharing the script of Redis. Unlike Redis.Wait it never blocks:
+// it reports how long the caller should wait, so that a broker can redeliver
+// later instead of a goroutine sleeping.
+type Keyed struct {
+	rdb    redis.UniversalClient
+	prefix string
+}
+
+// NewKeyed creates a Keyed limiter. Keys live in the queue's hash tag.
+func NewKeyed(rdb redis.UniversalClient, prefix string) *Keyed {
+	return &Keyed{rdb: rdb, prefix: "{" + prefix + "}:ratelimit:"}
+}
+
+// Allow takes one token from key's bucket. It returns 0 when allowed, or how
+// long to wait before the next token is available.
+func (k *Keyed) Allow(ctx context.Context, key string, perSecond float64, burst int) (time.Duration, error) {
+	interval := int64(math.Round(1e6 / perSecond))
+	tolerance := interval * int64(max(burst, 1)-1)
+	wait, err := gcraScript.Run(ctx, k.rdb, []string{k.prefix + key}, interval, tolerance).Int64()
+	if err != nil {
+		return 0, fmt.Errorf("ratelimit: %w", err)
+	}
+	return time.Duration(max(wait, 0)) * time.Microsecond, nil
+}

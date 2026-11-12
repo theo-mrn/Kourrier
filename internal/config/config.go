@@ -64,6 +64,12 @@ type Redis struct {
 	DB        int    `env:"DB" envDefault:"0"`
 	TLS       bool   `env:"TLS" envDefault:"false"`
 	KeyPrefix string `env:"KEY_PREFIX" envDefault:"kourrier"`
+	// WaitReplicas makes every submission wait until that many replicas
+	// acknowledged it (Redis WAIT) before it is reported as accepted, so that
+	// a failover of the primary cannot lose an acknowledged e-mail or event.
+	// 0 disables it.
+	WaitReplicas int           `env:"WAIT_REPLICAS" envDefault:"0"`
+	WaitTimeout  time.Duration `env:"WAIT_TIMEOUT" envDefault:"500ms"`
 }
 
 // Queue settings (ADR 006).
@@ -166,7 +172,13 @@ type Events struct {
 	// MaxQueueDepth pauses event ingestion while more e-mails than this wait
 	// in the queue, so that the backlog stays in the broker. 0 disables it.
 	MaxQueueDepth int64 `env:"MAX_QUEUE_DEPTH" envDefault:"50000"`
-	NATS          NATS  `envPrefix:"NATS_"`
+	// MaxBytes caps the size of one event (HTTP body or NATS payload). Every
+	// matching route copies the payload into a job: the cap bounds how much
+	// Redis memory one event can consume.
+	MaxBytes int64 `env:"MAX_BYTES" envDefault:"262144"`
+	// DeadLetterMaxLen caps the event dead-letter queue, approximately.
+	DeadLetterMaxLen int64 `env:"DEAD_LETTER_MAX_LEN" envDefault:"10000"`
+	NATS             NATS  `envPrefix:"NATS_"`
 }
 
 // NATS connection settings (ADR 014). Credentials are read from files.
@@ -215,7 +227,11 @@ func (c *Config) Validate() error {
 	check(c.Queue.VisibilityTimeout > c.Worker.SendTimeout,
 		"KOURRIER_QUEUE_VISIBILITY_TIMEOUT must be greater than KOURRIER_WORKER_SEND_TIMEOUT")
 	check(c.Storage.Provider != StorageS3 || c.Storage.S3.Bucket != "", "KOURRIER_STORAGE_S3_BUCKET is required")
+	check(c.Redis.WaitReplicas >= 0 && c.Redis.WaitTimeout > 0,
+		"KOURRIER_REDIS_WAIT_REPLICAS must be >= 0 and KOURRIER_REDIS_WAIT_TIMEOUT > 0")
 	check(c.Events.MaxQueueDepth >= 0, "KOURRIER_EVENTS_MAX_QUEUE_DEPTH must be >= 0")
+	check(c.Events.MaxBytes >= 1024, "KOURRIER_EVENTS_MAX_BYTES must be >= 1024")
+	check(c.Events.DeadLetterMaxLen >= 1, "KOURRIER_EVENTS_DEAD_LETTER_MAX_LEN must be >= 1")
 	check((c.Events.NATS.TLSCertFile == "") == (c.Events.NATS.TLSKeyFile == ""),
 		"KOURRIER_EVENTS_NATS_TLS_CERT_FILE and KOURRIER_EVENTS_NATS_TLS_KEY_FILE must be set together")
 	check(c.Events.NATS.CredsFile == "" || c.Events.NATS.NKeyFile == "",

@@ -96,20 +96,21 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 			Metrics:     metrics,
 			Logger:      logger,
 		})
-		events, err := newEventIngress(cfg, tenants, submitter, q, metrics, logger)
+		events, err := newEventIngress(cfg, rdb, tenants, submitter, q, metrics, logger)
 		if err != nil {
 			return err
 		}
 		ingress = events.run
 		srv := api.New(api.Deps{
-			Tenants:      tenants,
-			Submitter:    submitter,
-			Statuses:     statuses,
-			Templates:    renderer,
-			Events:       events.dispatcher,
-			Metrics:      metrics,
-			Logger:       logger,
-			MaxBodyBytes: cfg.MaxBodyBytes,
+			Tenants:       tenants,
+			Submitter:     submitter,
+			Statuses:      statuses,
+			Templates:     renderer,
+			Events:        events.dispatcher,
+			Metrics:       metrics,
+			Logger:        logger,
+			MaxBodyBytes:  cfg.MaxBodyBytes,
+			MaxEventBytes: cfg.Events.MaxBytes,
 		})
 		apiServer = newHTTPServer(cfg.HTTPAddr, srv.Handler(), logger)
 	}
@@ -246,6 +247,8 @@ func NewQueue(ctx context.Context, cfg *config.Config, rdb redis.UniversalClient
 		VisibilityTimeout: cfg.Queue.VisibilityTimeout,
 		ReclaimInterval:   cfg.Queue.ReclaimInterval,
 		DeadLetterMaxLen:  cfg.Queue.DeadLetterMaxLen,
+		WaitReplicas:      cfg.Redis.WaitReplicas,
+		WaitTimeout:       cfg.Redis.WaitTimeout,
 	}, logger)
 }
 

@@ -60,6 +60,10 @@ redis:
   db: 0
   tls: false
   keyPrefix: kourrier
+  # -- Wait for this many replicas to acknowledge every submission (Redis
+  # WAIT), so a primary failover cannot lose an accepted e-mail or event. 0 disables it.
+  waitReplicas: 0
+  waitTimeout: 500ms
 
 worker:
   concurrency: 8
@@ -101,6 +105,10 @@ events:
   # -- Pause ingestion while more e-mails than this wait in the queue, so the
   # backlog stays in the broker rather than in Redis memory. 0 disables it.
   maxQueueDepth: 50000
+  # -- Maximum size of one event in bytes (HTTP body or NATS payload).
+  maxBytes: 262144
+  # -- Approximate cap of the event dead-letter queue (`kourrier events list`).
+  deadLetterMaxLen: 10000
   nats:
     url: nats://nats:4222
     # -- Existing Secret holding the NATS credentials files below.
@@ -128,6 +136,7 @@ tenants:
   #  - id: yner
   #    api_keys:
   #      - sha256: <digest printed by kourrier keygen>
+  #        scopes: [emails]          # emails, events; default both. Give event producers [events] only.
   #    default_sender: { email: no-reply@yner.fr, name: Yner }
   #    allowed_senders: ["no-reply@yner.fr"]
 
@@ -227,6 +236,8 @@ prometheusRule:
   backlogThreshold: 1000
   # -- Rejected events per second above which to alert (event ingress).
   eventRejectionRateThreshold: 0
+  # -- Events in the event dead-letter queue above which to alert.
+  deadEventsThreshold: 0
 
 # -- Grafana dashboard picked up by the Grafana sidecar (ADR 005).
 grafanaDashboard:

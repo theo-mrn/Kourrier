@@ -30,6 +30,8 @@ data:
   KOURRIER_REDIS_DB: {{ .Values.redis.db | quote }}
   KOURRIER_REDIS_TLS: {{ .Values.redis.tls | quote }}
   KOURRIER_REDIS_KEY_PREFIX: {{ .Values.redis.keyPrefix | quote }}
+  KOURRIER_REDIS_WAIT_REPLICAS: {{ .Values.redis.waitReplicas | int | quote }}
+  KOURRIER_REDIS_WAIT_TIMEOUT: {{ .Values.redis.waitTimeout | quote }}
   KOURRIER_WORKER_CONCURRENCY: {{ .Values.worker.concurrency | quote }}
   KOURRIER_WORKER_MAX_ATTEMPTS: {{ .Values.worker.maxAttempts | quote }}
   KOURRIER_WORKER_SEND_TIMEOUT: {{ .Values.worker.sendTimeout | quote }}
@@ -57,6 +59,8 @@ data:
   {{- if include "kourrier.eventsEnabled" . }}
   KOURRIER_EVENTS_ROUTES_FILE: /etc/kourrier/routes.yaml
   KOURRIER_EVENTS_MAX_QUEUE_DEPTH: {{ .Values.events.maxQueueDepth | int64 | quote }}
+  KOURRIER_EVENTS_MAX_BYTES: {{ .Values.events.maxBytes | int64 | quote }}
+  KOURRIER_EVENTS_DEAD_LETTER_MAX_LEN: {{ .Values.events.deadLetterMaxLen | int64 | quote }}
   KOURRIER_EVENTS_NATS_URL: {{ .Values.events.nats.url | quote }}
   {{- with .Values.events.nats.credsKey }}
   KOURRIER_EVENTS_NATS_CREDS_FILE: /etc/kourrier/nats/{{ . }}

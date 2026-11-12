@@ -82,6 +82,7 @@ sequenceDiagram
 | `internal/routing` | Fichier de routes et expressions CEL compilées ([ADR 013](adr/0013-routage-declaratif-cel.md)). |
 | `internal/dispatch` | Événement → e-mails : routage, idempotence par événement, issues, backpressure. |
 | `internal/source/natsjs` | Consommateur NATS JetStream ([ADR 014](adr/0014-nats-jetstream.md)). |
+| `internal/deadevent` | File des événements en échec, rejouable ([ADR 015](adr/0015-durcissement-entree-evenementielle.md)). |
 | `internal/tenant` | Tenants, clés API, expéditeurs autorisés ([ADR 008](adr/0008-authentification-multi-tenant.md)). |
 | `internal/queue` | Interface `Queue` et implémentation Redis Streams ([ADR 006](adr/0006-fiabilite-redis-streams.md)). |
 | `internal/worker` | Pool de workers : rendu, rate limit, envoi, retries. |
