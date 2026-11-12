@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -122,5 +123,49 @@ func TestListCapsTheLimit(t *testing.T) {
 	page, err := s.List(ctx, Query{Limit: 10 * maxLimit})
 	if err != nil || len(page.Entries) != maxLimit || page.Next == "" {
 		t.Fatalf("len = %d, next = %q, err = %v", len(page.Entries), page.Next, err)
+	}
+}
+
+func TestStats(t *testing.T) {
+	s := newStore(t, 1000)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Minute)
+	at := func(d time.Duration) time.Time { return now.Add(-d) }
+	for _, e := range []Entry{
+		{EmailID: "a", Tenant: "shop", Template: "welcome", State: status.Queued, At: at(3 * time.Minute)},
+		{EmailID: "a", Tenant: "shop", Template: "welcome", State: status.Sent, At: at(3*time.Minute - 200*time.Millisecond)},
+		{EmailID: "b", Tenant: "shop", Template: "welcome", State: status.Queued, At: at(2 * time.Minute)},
+		{EmailID: "b", Tenant: "shop", Template: "welcome", State: status.Retrying, At: at(2*time.Minute - time.Second)},
+		{EmailID: "b", Tenant: "shop", Template: "welcome", State: status.Sent, At: at(2*time.Minute - 2*time.Second)},
+		{EmailID: "c", Tenant: "billing", Template: "invoice", State: status.Queued, At: at(time.Minute)},
+		{EmailID: "c", Tenant: "billing", Template: "invoice", State: status.Failed, At: at(time.Minute - time.Second)},
+	} {
+		if err := s.Record(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	st, err := s.Stats(ctx, now.Add(-time.Hour), now.Add(time.Minute), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Totals != (Totals{Queued: 3, Sent: 2, Failed: 1, Retries: 1}) || len(st.Buckets) != 61 || st.Step != 60 {
+		t.Fatalf("stats = %+v", st)
+	}
+	var sent, failed int
+	for _, b := range st.Buckets {
+		sent, failed = sent+b.Sent, failed+b.Failed
+	}
+	if sent != 2 || failed != 1 {
+		t.Fatalf("buckets hold %d sent and %d failed", sent, failed)
+	}
+	if st.Latency == nil || st.Latency.P50 != 200 || st.Latency.P95 != 200 && st.Latency.P95 != 2000 {
+		t.Fatalf("latency = %+v", st.Latency)
+	}
+	if len(st.Template) != 2 || st.Template[0] != (Breakdown{Name: "welcome", Sent: 2}) || st.Tenants[1].Name != "billing" {
+		t.Fatalf("breakdowns = %+v %+v", st.Template, st.Tenants)
+	}
+	if _, err := s.Stats(ctx, now, now, time.Minute); err == nil {
+		t.Fatal("an empty window must be refused")
 	}
 }
