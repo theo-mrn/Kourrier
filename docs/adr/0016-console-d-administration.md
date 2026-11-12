@@ -33,7 +33,7 @@ Kourrier embarque une **console web d'administration**, désactivée par défaut
 
 | Vue | Données | Actions |
 |-----|---------|---------|
-| Vue d'ensemble | File (prêts, en cours, en attente de retry, DLQ), événements en échec, configuration effective | |
+| Tableau de bord | Envois et échecs sur 1 h ou 24 h, taux de succès, délai de livraison, templates les plus utilisés, état de la file | |
 | Activité | Fil des derniers changements de statut ; recherche par ID d'e-mail | |
 | Dead-letter queue | Jobs en échec, cause, tentatives | Rejouer, supprimer |
 | Événements en échec | Entrées de l'ADR 015 | Rejouer (mêmes règles que `kourrier events replay`), supprimer |
@@ -42,7 +42,7 @@ Kourrier embarque une **console web d'administration**, désactivée par défaut
 
 Les empreintes des clés d'API ne sont jamais renvoyées.
 
-**Fil d'activité.** Il n'existait pas d'index des e-mails récents : un statut ne se lit que par son ID. Chaque changement de statut (`queued`, `retrying`, `sent`, `failed`) ajoute désormais une entrée à un **stream Redis plafonné** (`{kourrier}:activity`, 10 000 entrées par défaut, `KOURRIER_ACTIVITY_MAX_LEN`, `0` désactive le fil). Une entrée contient l'ID de l'e-mail, le tenant, l'état, le template, les destinataires **masqués** comme dans les logs, la tentative et l'erreur. L'écriture est faite au mieux : un échec est journalisé, il ne fait jamais échouer un envoi. Le fil est indépendant de la console : en mode séparé, ce sont les workers qui l'alimentent.
+**Fil d'activité.** Il n'existait pas d'index des e-mails récents : un statut ne se lit que par son ID. Chaque changement de statut (`queued`, `retrying`, `sent`, `failed`) ajoute désormais une entrée à un **stream Redis plafonné** (`{kourrier}:activity`, 10 000 entrées par défaut, `KOURRIER_ACTIVITY_MAX_LEN`, `0` désactive le fil). Une entrée contient l'ID de l'e-mail, le tenant, l'état, le template, les destinataires **masqués** comme dans les logs, la tentative et l'erreur. L'écriture est faite au mieux : un échec est journalisé, il ne fait jamais échouer un envoi. Le fil est indépendant de la console : en mode séparé, ce sont les workers qui l'alimentent. Le tableau de bord en tire ses statistiques : les identifiants d'un stream Redis sont des horodatages, une fenêtre de temps se lit donc directement, sans index supplémentaire. Elles ne couvrent que la période que le fil contient encore.
 
 ## Alternatives écartées
 
