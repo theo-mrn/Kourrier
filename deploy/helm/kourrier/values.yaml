@@ -124,6 +124,28 @@ events:
       certKey: ""
       keyKey: ""
 
+# -- Web administration console (ADR 016, docs/console.md), disabled by
+# default. It runs with the API (mode all or api), on its own port and its
+# own Service: the public API Service and Ingress never expose it.
+console:
+  enabled: false
+  # -- Existing Secret holding the admin token (at least 32 characters), e.g.
+  # kubectl create secret generic kourrier-console --from-literal=token="$(openssl rand -base64 32)"
+  tokenSecret:
+    name: ""
+    key: token
+  sessionTTL: 12h
+  # -- Secure attribute of the session cookie. Keep it: browsers accept it
+  # over HTTPS and on localhost (kubectl port-forward).
+  secureCookie: true
+  service:
+    port: 8081
+
+# -- Feed of the latest status changes shown by the console (ADR 016).
+activity:
+  # -- Approximate number of entries kept in Redis. 0 disables the feed.
+  maxLen: 10000
+
 # -- Additional KOURRIER_* variables (see docs/configuration.md).
 extraEnv: []
 #  - name: KOURRIER_STATUS_TTL
@@ -214,6 +236,8 @@ networkPolicy:
   apiFrom: []
   # -- Peers allowed to scrape metrics (port 9090). Empty allows every namespace.
   metricsFrom: []
+  # -- Peers allowed to reach the console (port 8081). Empty allows the whole namespace.
+  consoleFrom: []
 
 nodeSelector: {}
 tolerations: []

@@ -21,6 +21,16 @@ spec:
         - podSelector: {}
         {{- end }}
     {{- end }}
+    {{- if include "kourrier.consoleEnabled" . }}
+    - ports:
+        - port: console
+      from:
+        {{- if .Values.networkPolicy.consoleFrom }}
+        {{- toYaml .Values.networkPolicy.consoleFrom | nindent 8 }}
+        {{- else }}
+        - podSelector: {}
+        {{- end }}
+    {{- end }}
     - ports:
         - port: metrics
       {{- with .Values.networkPolicy.metricsFrom }}

@@ -15,6 +15,14 @@ Send an e-mail from inside the cluster:
     -d '{"to":[{"email":"jane@example.com"}],"template":{"name":"welcome","locale":"fr","data":{"name":"Jane"}}}'
 {{- end }}
 
+{{- if include "kourrier.consoleEnabled" . }}
+
+Admin console (sign in with the token of Secret {{ .Values.console.tokenSecret.name }}):
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "kourrier.fullname" . }}-console {{ .Values.console.service.port }}
+  open http://localhost:{{ .Values.console.service.port }}
+{{- end }}
+
 Metrics: http://{{ include "kourrier.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.adminPort }}/metrics
 {{- if .Values.grafanaDashboard.enabled }}
 Grafana dashboard: ConfigMap {{ include "kourrier.fullname" . }}-dashboard (label grafana_dashboard).

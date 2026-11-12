@@ -9,6 +9,12 @@
 {{- if and (or .Values.events.nats.credsKey .Values.events.nats.nkeyKey .Values.events.nats.tls.caKey .Values.events.nats.tls.certKey) (not .Values.events.nats.secretName) }}
 {{- fail "events.nats.secretName is required when a NATS credential key is set" }}
 {{- end }}
+{{- if and .Values.console.enabled (not (include "kourrier.runsAPI" .)) }}
+{{- fail "console.enabled requires mode all or api" }}
+{{- end }}
+{{- if and .Values.console.enabled (not .Values.console.tokenSecret.name) }}
+{{- fail "console.tokenSecret.name is required when the console is enabled" }}
+{{- end }}
 {{- if not (has .Values.mailer.provider (list "aws-ses" "smtp" "console" "filesystem")) }}
 {{- fail "mailer.provider must be one of aws-ses, smtp, console, filesystem" }}
 {{- end }}
@@ -56,6 +62,14 @@ data:
   KOURRIER_MAILER_SMTP_TLS: {{ .Values.mailer.smtp.tls | quote }}
   KOURRIER_MAILER_SMTP_USERNAME: {{ .Values.mailer.smtp.username | quote }}
   KOURRIER_MAILER_FILESYSTEM_DIR: /tmp/emails
+  KOURRIER_ACTIVITY_MAX_LEN: {{ .Values.activity.maxLen | int64 | quote }}
+  {{- if include "kourrier.consoleEnabled" . }}
+  KOURRIER_CONSOLE_ENABLED: "true"
+  KOURRIER_CONSOLE_ADDR: ":8081"
+  KOURRIER_CONSOLE_TOKEN_FILE: /etc/kourrier/console-token
+  KOURRIER_CONSOLE_SESSION_TTL: {{ .Values.console.sessionTTL | quote }}
+  KOURRIER_CONSOLE_SECURE_COOKIE: {{ .Values.console.secureCookie | quote }}
+  {{- end }}
   {{- if include "kourrier.eventsEnabled" . }}
   KOURRIER_EVENTS_ROUTES_FILE: /etc/kourrier/routes.yaml
   KOURRIER_EVENTS_MAX_QUEUE_DEPTH: {{ .Values.events.maxQueueDepth | int64 | quote }}

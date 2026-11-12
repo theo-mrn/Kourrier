@@ -1,0 +1,7 @@
+# Rendered by CI: the console enabled, with its network policy.
+console:
+  enabled: true
+  tokenSecret:
+    name: kourrier-console
+networkPolicy:
+  enabled: true
