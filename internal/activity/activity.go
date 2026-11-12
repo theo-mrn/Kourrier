@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -174,4 +175,159 @@ func decode(m redis.XMessage) Entry {
 	e.Attempt, _ = strconv.Atoi(str("attempt"))
 	e.At, _ = time.Parse(time.RFC3339Nano, str("at"))
 	return e
+}
+
+// Stats summarises the feed over a time window, for the console dashboard.
+type Stats struct {
+	From time.Time `json:"from"`
+	To   time.Time `json:"to"`
+	Step int64     `json:"step_seconds"`
+	// Complete is false when the feed does not reach back to From (it is
+	// capped in entries): the figures then cover a shorter window.
+	Complete bool        `json:"complete"`
+	Totals   Totals      `json:"totals"`
+	Buckets  []Bucket    `json:"buckets"`
+	Latency  *Latency    `json:"latency"`
+	Template []Breakdown `json:"templates"`
+	Tenants  []Breakdown `json:"tenants"`
+}
+
+// Totals counts the status changes of the window.
+type Totals struct {
+	Queued  int `json:"queued"`
+	Sent    int `json:"sent"`
+	Failed  int `json:"failed"`
+	Retries int `json:"retries"`
+}
+
+// Bucket counts the emails sent and failed during one step of the window.
+type Bucket struct {
+	Start  time.Time `json:"start"`
+	Sent   int       `json:"sent"`
+	Failed int       `json:"failed"`
+}
+
+// Latency is the delivery time (queued to sent) of the emails queued and sent
+// within the window, in milliseconds.
+type Latency struct {
+	P50 int64 `json:"p50_ms"`
+	P95 int64 `json:"p95_ms"`
+}
+
+// Breakdown counts sent and failed emails per template or tenant.
+type Breakdown struct {
+	Name   string `json:"name"`
+	Sent   int    `json:"sent"`
+	Failed int    `json:"failed"`
+}
+
+// maxBreakdown bounds the template and tenant breakdowns.
+const maxBreakdown = 6
+
+// Stats reads the entries recorded between from and to and aggregates them in
+// buckets of step. Stream IDs are millisecond timestamps, so the window is
+// read directly, in batches.
+func (s *Store) Stats(ctx context.Context, from, to time.Time, step time.Duration) (Stats, error) {
+	if step <= 0 || !from.Before(to) {
+		return Stats{}, errors.New("activity: invalid stats window")
+	}
+	n := int(to.Sub(from) / step)
+	st := Stats{From: from, To: to, Step: int64(step / time.Second), Buckets: make([]Bucket, n)}
+	for i := range st.Buckets {
+		st.Buckets[i].Start = from.Add(time.Duration(i) * step)
+	}
+
+	oldest, err := s.rdb.XRangeN(ctx, s.key, "-", "+", 1).Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return Stats{}, fmt.Errorf("activity: stats: %w", err)
+	}
+	st.Complete = len(oldest) == 1 && !decode(oldest[0]).At.After(from)
+
+	queuedAt := map[string]time.Time{}
+	var latencies []int64
+	templates, tenants := map[string]*Breakdown{}, map[string]*Breakdown{}
+	count := func(m map[string]*Breakdown, name string, sent bool) {
+		if name == "" {
+			name = "inline"
+		}
+		b := m[name]
+		if b == nil {
+			b = &Breakdown{Name: name}
+			m[name] = b
+		}
+		if sent {
+			b.Sent++
+		} else {
+			b.Failed++
+		}
+	}
+
+	start := strconv.FormatInt(from.UnixMilli(), 10)
+	end := strconv.FormatInt(to.UnixMilli(), 10)
+	for {
+		msgs, err := s.rdb.XRangeN(ctx, s.key, start, end, 1000).Result()
+		if err != nil && !errors.Is(err, redis.Nil) {
+			return Stats{}, fmt.Errorf("activity: stats: %w", err)
+		}
+		for _, m := range msgs {
+			e := decode(m)
+			i := int(e.At.Sub(from) / step)
+			switch e.State {
+			case status.Queued:
+				st.Totals.Queued++
+				queuedAt[e.EmailID] = e.At
+			case status.Retrying:
+				st.Totals.Retries++
+			case status.Sent, status.Failed:
+				sent := e.State == status.Sent
+				if sent {
+					st.Totals.Sent++
+					if q, ok := queuedAt[e.EmailID]; ok {
+						latencies = append(latencies, e.At.Sub(q).Milliseconds())
+					}
+				} else {
+					st.Totals.Failed++
+				}
+				if i >= 0 && i < n {
+					if sent {
+						st.Buckets[i].Sent++
+					} else {
+						st.Buckets[i].Failed++
+					}
+				}
+				count(templates, e.Template, sent)
+				count(tenants, e.Tenant, sent)
+			}
+		}
+		if len(msgs) < 1000 {
+			break
+		}
+		start = "(" + msgs[len(msgs)-1].ID
+	}
+
+	if len(latencies) > 0 {
+		slices.Sort(latencies)
+		pick := func(q float64) int64 { return latencies[int(q*float64(len(latencies)-1))] }
+		st.Latency = &Latency{P50: pick(0.5), P95: pick(0.95)}
+	}
+	st.Template, st.Tenants = top(templates), top(tenants)
+	return st, nil
+}
+
+// top returns the busiest entries of m, by total emails.
+func top(m map[string]*Breakdown) []Breakdown {
+	out := make([]Breakdown, 0, len(m))
+	for _, b := range m {
+		out = append(out, *b)
+	}
+	slices.SortFunc(out, func(a, b Breakdown) int {
+		if d := (b.Sent + b.Failed) - (a.Sent + a.Failed); d != 0 {
+			return d
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	if len(out) > maxBreakdown {
+		out = out[:maxBreakdown]
+	}
+	return out
 }

@@ -177,3 +177,31 @@ export interface Problem {
   status: number;
   detail?: string;
 }
+
+export type StatsRange = "1h" | "24h";
+
+export interface StatsBucket {
+  start: string;
+  sent: number;
+  failed: number;
+}
+
+export interface Breakdown {
+  name: string;
+  sent: number;
+  failed: number;
+}
+
+export interface Stats {
+  enabled: boolean;
+  range: StatsRange;
+  from?: string;
+  to?: string;
+  step_seconds?: number;
+  complete?: boolean;
+  totals?: { queued: number; sent: number; failed: number; retries: number };
+  buckets?: StatsBucket[];
+  latency?: { p50_ms: number; p95_ms: number } | null;
+  templates?: Breakdown[];
+  tenants?: Breakdown[];
+}

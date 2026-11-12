@@ -1,75 +1,72 @@
+import { Buildings, Key } from "@phosphor-icons/react";
+
 import { useTenants } from "../api/hooks";
-import { Card, EmptyState, ErrorNotice, Loading, Mono, PageHeader, Tag } from "../components/ui";
+import { Page } from "../components/Layout";
+import { EmptyState, ErrorNotice, Label, Skeleton, Tag } from "../components/ui";
 import { plural } from "../lib/format";
 
 export function Tenants() {
   const { data, error, isPending } = useTenants();
 
   return (
-    <>
-      <PageHeader
-        title="Tenants"
-        description={
-          <>
-            The applications allowed to use Kourrier, from the tenants file. Only SHA-256 digests of the keys are
-            stored, and the console never shows them.
-          </>
-        }
-      />
-      {isPending && <Loading />}
+    <Page title="Tenants" description="The applications allowed to send. Key digests are never shown.">
+      {isPending && (
+        <div role="status" aria-label="Loading" className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <Skeleton className="h-48 rounded-lg" />
+          <Skeleton className="h-48 rounded-lg" />
+        </div>
+      )}
       {error && <ErrorNotice error={error} />}
-      {data?.length === 0 && <EmptyState title="No tenant" />}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      {data?.length === 0 && <EmptyState icon={Buildings} title="No tenant" />}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {data?.map((t) => (
-          <Card key={t.id} className="p-5">
-            <h2 className="display text-2xl font-semibold">{t.id}</h2>
-            <dl className="mt-4 flex flex-col gap-4 text-sm">
+          <section key={t.id} className="surface-card rounded-xl border border-line-strong">
+            <header className="flex h-12 items-center gap-3 border-b border-line px-4">
+              <Label dot={t.id}>{t.id}</Label>
+              <span className="ml-auto text-xs text-ink-3">{plural(t.api_keys.length, "API key")}</span>
+            </header>
+            <dl className="flex flex-col gap-4 p-4 text-sm">
               <div>
-                <dt className="font-mono text-[11px] tracking-wide text-ink-3 uppercase">Default sender</dt>
+                <dt className="text-xs text-ink-3">Default sender</dt>
                 <dd className="mt-1">
                   {t.default_sender.email ? (
                     <>
-                      {t.default_sender.name && <span className="mr-1">{t.default_sender.name}</span>}
-                      <Mono className="text-ink-2">&lt;{t.default_sender.email}&gt;</Mono>
+                      {t.default_sender.name && `${t.default_sender.name} `}
+                      <span className="text-ink-3">&lt;{t.default_sender.email}&gt;</span>
                     </>
                   ) : (
-                    <span className="text-ink-3">none: requests must set from</span>
+                    <span className="text-ink-3">None. Requests must set a sender.</span>
                   )}
                 </dd>
               </div>
               <div>
-                <dt className="font-mono text-[11px] tracking-wide text-ink-3 uppercase">Allowed senders</dt>
-                <dd className="mt-1 flex flex-wrap gap-1.5">
+                <dt className="text-xs text-ink-3">Allowed senders</dt>
+                <dd className="mt-2 flex flex-wrap gap-2">
                   {t.allowed_senders.map((s) => (
-                    <Mono key={s} className="rounded-s bg-sunken px-1.5 py-0.5">
-                      {s}
-                    </Mono>
+                    <Tag key={s}>
+                      <span className="font-mono">{s}</span>
+                    </Tag>
                   ))}
                 </dd>
               </div>
               <div>
-                <dt className="font-mono text-[11px] tracking-wide text-ink-3 uppercase">
-                  {plural(t.api_keys.length, "API key")}
-                </dt>
-                <dd className="mt-1">
-                  <ul className="flex flex-col gap-1.5">
-                    {t.api_keys.map((k, i) => (
-                      <li key={i} className="flex items-center gap-2">
-                        <span className="text-ink-3">Key {i + 1}</span>
-                        {k.scopes.map((s) => (
-                          <Tag key={s} tone={s === "emails" ? "blue" : "neutral"}>
-                            {s}
-                          </Tag>
-                        ))}
-                      </li>
-                    ))}
-                  </ul>
+                <dt className="text-xs text-ink-3">Keys and scopes</dt>
+                <dd className="mt-2 flex flex-col gap-2">
+                  {t.api_keys.map((k, i) => (
+                    <p key={i} className="flex items-center gap-2">
+                      <Key aria-hidden className="size-4 text-ink-3" />
+                      <span className="text-ink-2">Key {i + 1}</span>
+                      {k.scopes.map((s) => (
+                        <Tag key={s}>{s}</Tag>
+                      ))}
+                    </p>
+                  ))}
                 </dd>
               </div>
             </dl>
-          </Card>
+          </section>
         ))}
       </div>
-    </>
+    </Page>
   );
 }

@@ -8,8 +8,8 @@ La console est **désactivée par défaut**. Elle est embarquée dans le binaire
 
 | Page | Contenu | Actions |
 |------|---------|---------|
-| Overview | File (prêts, en cours, en attente de retry, DLQ), événements en échec, configuration de l'instance. Rafraîchie toutes les 5 s. | |
-| Activity | Fil des derniers changements de statut, filtrable par tenant et par état ; recherche par ID ; chronologie d'un e-mail. | |
+| Dashboard | Sur la dernière heure ou les dernières 24 h : e-mails envoyés et en échec, taux de succès, délai de livraison p50/p95, graphique par intervalle (avec vue tableau), templates les plus utilisés, derniers échecs ; état de la file en temps réel. | |
+| Emails | Chaque e-mail récent avec son dernier état, groupés par état, filtrables par tenant ; page d'un e-mail avec sa chronologie et ses propriétés ; ouverture par ID avec `⌘K`. | |
 | Dead letters | Jobs en échec définitif : cause, tentatives, destinataires masqués. | Rejouer, supprimer |
 | Failed events | Événements conservés par l'entrée événementielle ([ADR 015](adr/0015-durcissement-entree-evenementielle.md)), avec le CloudEvent complet. | Rejouer, supprimer |
 | Templates | Templates de chaque tenant et leurs locales. | Prévisualiser avec des données |
@@ -72,7 +72,7 @@ Variables : [configuration.md](configuration.md#console-dadministration).
 
 ## Fil d'activité
 
-La liste des e-mails récents repose sur un stream Redis plafonné (`{kourrier}:activity`, 10 000 entrées par défaut) alimenté à chaque changement de statut. L'entrée `queued` est écrite atomiquement avec le job ; les autres le sont au mieux, sans jamais faire échouer un envoi. Le fil coûte une écriture Redis par changement de statut ; `KOURRIER_ACTIVITY_MAX_LEN=0` le désactive.
+La liste des e-mails récents et les statistiques du tableau de bord reposent sur un stream Redis plafonné (`{kourrier}:activity`, 10 000 entrées par défaut) alimenté à chaque changement de statut. L'entrée `queued` est écrite atomiquement avec le job ; les autres le sont au mieux, sans jamais faire échouer un envoi. Le fil coûte une écriture Redis par changement de statut ; `KOURRIER_ACTIVITY_MAX_LEN=0` le désactive.
 
 Ce n'est pas un historique complet : seules les dernières entrées sont gardées, et un statut expire après `KOURRIER_STATUS_TTL`.
 
@@ -85,7 +85,7 @@ Les sessions ouvertes avec l'ancien jeton sont alors refusées.
 
 ## Développement de l'interface
 
-Le code est dans [web/console](../web/console) : Vite, React 19, TypeScript strict, TanStack Query, Tailwind CSS. Le build est écrit dans `internal/console/dist`, embarqué par `go:embed`. Un binaire construit sans lui sert une page qui explique comment le construire ; l'image Docker l'inclut toujours.
+Le code est dans [web/console](../web/console) : Vite, React 19, TypeScript strict, TanStack Query, Tailwind CSS. L'interface s'inspire de Linear : sombre, dense, une palette de commandes (`⌘K`) et des graphiques SVG faits main, dont les couleurs sont vérifiées pour les daltonismes. Le build est écrit dans `internal/console/dist`, embarqué par `go:embed`. Un binaire construit sans lui sert une page qui explique comment le construire ; l'image Docker l'inclut toujours.
 
 ```sh
 make console-check   # format, lint, types, tests (Vitest)

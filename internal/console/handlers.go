@@ -154,6 +154,44 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ActivityResponse{Enabled: true, Entries: page.Entries, Next: page.Next})
 }
 
+// StatsResponse is returned by GET /api/stats.
+type StatsResponse struct {
+	Enabled bool `json:"enabled"`
+	// Range is the requested window: "1h" or "24h".
+	Range string `json:"range"`
+	activity.Stats
+}
+
+// statsRanges maps the windows of the dashboard to their bucket size.
+var statsRanges = map[string]struct{ window, step time.Duration }{
+	"1h":  {time.Hour, time.Minute},
+	"24h": {24 * time.Hour, 30 * time.Minute},
+}
+
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("range")
+	if name == "" {
+		name = "1h"
+	}
+	rg, ok := statsRanges[name]
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "invalid-range", "range must be 1h or 24h")
+		return
+	}
+	if s.d.Activity == nil {
+		writeJSON(w, http.StatusOK, StatsResponse{Range: name})
+		return
+	}
+	// Buckets are aligned on their size, the last one being the current one.
+	to := time.Now().Truncate(rg.step).Add(rg.step)
+	st, err := s.d.Activity.Stats(r.Context(), to.Add(-rg.window), to, rg.step)
+	if err != nil {
+		s.unavailable(w, r, "compute stats", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, StatsResponse{Enabled: true, Range: name, Stats: st})
+}
+
 // EmailResponse is returned by GET /api/emails/{id}.
 type EmailResponse struct {
 	Tenant string         `json:"tenant,omitempty"`
