@@ -474,3 +474,26 @@ func TestRoutes(t *testing.T) {
 		t.Fatalf("dead events without ingress = %+v", ev)
 	}
 }
+
+func TestStats(t *testing.T) {
+	f := newFixture(t)
+	f.login(t)
+	ctx := context.Background()
+	_ = f.activity.Record(ctx, activity.Entry{EmailID: "e1", Tenant: "shop", Template: "welcome", State: status.Queued})
+	_ = f.activity.Record(ctx, activity.Entry{EmailID: "e1", Tenant: "shop", Template: "welcome", State: status.Sent})
+
+	st := decodeBody[StatsResponse](t, f.do(t, "GET", "/api/stats?range=24h", ""))
+	if !st.Enabled || st.Range != "24h" || len(st.Buckets) != 48 || st.Totals.Sent != 1 || st.Latency == nil {
+		t.Fatalf("stats = %+v", st)
+	}
+	if one := decodeBody[StatsResponse](t, f.do(t, "GET", "/api/stats", "")); len(one.Buckets) != 60 {
+		t.Fatalf("default range has %d buckets", len(one.Buckets))
+	}
+	if rec := f.do(t, "GET", "/api/stats?range=7d", ""); rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown range: %d", rec.Code)
+	}
+	f.srv.d.Activity = nil
+	if off := decodeBody[StatsResponse](t, f.do(t, "GET", "/api/stats", "")); off.Enabled {
+		t.Fatalf("stats without the activity feed = %+v", off)
+	}
+}

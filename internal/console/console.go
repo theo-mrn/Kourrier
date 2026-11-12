@@ -129,6 +129,7 @@ func (s *Server) Handler() http.Handler {
 	// Reads.
 	mux.HandleFunc("GET /api/overview", s.authenticated(s.handleOverview))
 	mux.HandleFunc("GET /api/activity", s.authenticated(s.handleActivity))
+	mux.HandleFunc("GET /api/stats", s.authenticated(s.handleStats))
 	mux.HandleFunc("GET /api/emails/{id}", s.authenticated(s.handleEmail))
 	mux.HandleFunc("GET /api/dlq", s.authenticated(s.handleDLQ))
 	mux.HandleFunc("GET /api/dead-events", s.authenticated(s.handleDeadEvents))
