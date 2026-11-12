@@ -275,3 +275,34 @@ func TestEnqueueAtomicWaitsForReplicas(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotReplicated", err)
 	}
 }
+
+func TestDeadLetterLookupAndDelete(t *testing.T) {
+	_, rdb := setup(t)
+	q := newTestQueue(t, "c1", rdb)
+	ctx := context.Background()
+	for _, id := range []string{"j1", "j2", "j3"} {
+		_ = q.Enqueue(ctx, job(id))
+		if err := q.DeadLetter(ctx, receive(t, q), "boom "+id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := q.ListDead(ctx, 10)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("ListDead = %+v, %v", all, err)
+	}
+	page, err := q.ListDeadAfter(ctx, all[0].ID, 10)
+	if err != nil || len(page) != 2 || page[0].Job.ID != "j2" {
+		t.Fatalf("ListDeadAfter = %+v, %v", page, err)
+	}
+
+	got, err := q.DeadJobs(ctx, all[2].ID, "0-1", all[0].ID)
+	if err != nil || len(got) != 2 || got[0].Job.ID != "j3" || got[1].Job.ID != "j1" {
+		t.Fatalf("DeadJobs = %+v, %v", got, err)
+	}
+	if n, err := q.DeleteDead(ctx, all[1].ID, "0-1"); err != nil || n != 1 {
+		t.Fatalf("DeleteDead = %d, %v", n, err)
+	}
+	if s := stats(t, q); s.Dead != 2 {
+		t.Fatalf("dead = %d, want 2", s.Dead)
+	}
+}

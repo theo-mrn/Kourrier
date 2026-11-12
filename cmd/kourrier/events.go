@@ -12,7 +12,6 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/theo-mrn/kourrier/internal/app"
-	"github.com/theo-mrn/kourrier/internal/cloudevent"
 	"github.com/theo-mrn/kourrier/internal/config"
 	"github.com/theo-mrn/kourrier/internal/deadevent"
 	"github.com/theo-mrn/kourrier/internal/dispatch"
@@ -127,36 +126,38 @@ func replayEvents(ctx context.Context, w io.Writer, cfg *config.Config, rdb redi
 		Metrics:     metrics, Logger: logger,
 	})
 
-	entries, err := dead.List(ctx, n)
+	var entries []deadevent.Entry
+	if only != "" {
+		entries, err = dead.Get(ctx, only)
+	} else {
+		entries, err = dead.List(ctx, n)
+	}
 	if err != nil {
 		return err
 	}
+	if only != "" && len(entries) == 0 {
+		return fmt.Errorf("no entry %s", only)
+	}
+	results, err := d.ReplayDead(ctx, dead, tenants, entries)
 	var replayed, skipped int
-	for _, entry := range entries {
-		if only != "" && entry.ID != only {
-			continue
-		}
-		t, known := tenants.Get(entry.Tenant)
-		e, perr := cloudevent.ParseStructured(entry.Event)
-		if !entry.Replayable() || perr != nil || !known {
-			fmt.Fprintf(w, "%s: skipped (not replayable: %s)\n", entry.ID, entry.Reason)
+	for _, r := range results {
+		switch {
+		case r.Skipped != "":
+			fmt.Fprintf(w, "%s: skipped (%s)\n", r.EntryID, r.Skipped)
 			skipped++
-			continue
+		case r.Outcome == dispatch.Retry:
+			fmt.Fprintf(w, "%s: transient failure, kept\n", r.EntryID)
+		default:
+			replayed++
+			line := fmt.Sprintf("%s: %s, %d e-mail(s)", r.EntryID, r.Outcome, r.Emails)
+			if r.DeadLetterID != "" {
+				line += ", failed again (kept as " + r.DeadLetterID + ")"
+			}
+			fmt.Fprintln(w, line)
 		}
-		rep := d.Replay(ctx, t, e, entry.Routes)
-		if rep.Outcome == dispatch.Retry {
-			fmt.Fprintf(w, "%s: transient failure, kept: %v\n", entry.ID, rep.Err)
-			return fmt.Errorf("replay stopped after %d event(s)", replayed)
-		}
-		if err := dead.Delete(ctx, entry.ID); err != nil {
-			return err
-		}
-		replayed++
-		line := fmt.Sprintf("%s: %s, %d e-mail(s)", entry.ID, rep.Outcome, len(rep.Emails))
-		if rep.DeadLetterID != "" {
-			line += ", failed again (kept as " + rep.DeadLetterID + ")"
-		}
-		fmt.Fprintln(w, line)
+	}
+	if err != nil {
+		return fmt.Errorf("replay stopped after %d event(s): %w", replayed, err)
 	}
 	fmt.Fprintf(w, "replayed %d event(s), skipped %d\n", replayed, skipped)
 	return nil

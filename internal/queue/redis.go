@@ -452,23 +452,71 @@ type DeadJob struct {
 
 // ListDead returns up to count dead-letter entries, oldest first.
 func (q *RedisStreams) ListDead(ctx context.Context, count int64) ([]DeadJob, error) {
-	msgs, err := q.rdb.XRangeN(ctx, q.dead, "-", "+", count).Result()
+	return q.ListDeadAfter(ctx, "", count)
+}
+
+// ListDeadAfter returns up to count dead-letter entries following the entry
+// ID after (from the oldest when after is empty).
+func (q *RedisStreams) ListDeadAfter(ctx context.Context, after string, count int64) ([]DeadJob, error) {
+	start := "-"
+	if after != "" {
+		start = "(" + after
+	}
+	msgs, err := q.rdb.XRangeN(ctx, q.dead, start, "+", count).Result()
 	if err != nil {
 		return nil, fmt.Errorf("queue: list dead: %w", err)
 	}
 	out := make([]DeadJob, 0, len(msgs))
 	for _, m := range msgs {
-		dj := DeadJob{ID: m.ID}
-		dj.Raw, _ = m.Values[fieldJob].(string)
-		dj.Reason, _ = m.Values["reason"].(string)
-		dj.FailedAt, _ = m.Values["failed_at"].(string)
-		var job Job
-		if json.Unmarshal([]byte(dj.Raw), &job) == nil {
-			dj.Job = &job
-		}
-		out = append(out, dj)
+		out = append(out, decodeDead(m))
 	}
 	return out, nil
+}
+
+// DeadJobs returns the dead-letter entries with the given IDs that still
+// exist, in the order of ids.
+func (q *RedisStreams) DeadJobs(ctx context.Context, ids ...string) ([]DeadJob, error) {
+	cmds := make([]*redis.XMessageSliceCmd, len(ids))
+	_, err := q.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		for i, id := range ids {
+			cmds[i] = p.XRange(ctx, q.dead, id, id)
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return nil, fmt.Errorf("queue: get dead: %w", err)
+	}
+	out := make([]DeadJob, 0, len(ids))
+	for _, c := range cmds {
+		for _, m := range c.Val() {
+			out = append(out, decodeDead(m))
+		}
+	}
+	return out, nil
+}
+
+// DeleteDead removes dead-letter entries and returns how many existed.
+func (q *RedisStreams) DeleteDead(ctx context.Context, ids ...string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	n, err := q.rdb.XDel(ctx, q.dead, ids...).Result()
+	if err != nil {
+		return 0, fmt.Errorf("queue: delete dead: %w", err)
+	}
+	return n, nil
+}
+
+func decodeDead(m redis.XMessage) DeadJob {
+	dj := DeadJob{ID: m.ID}
+	dj.Raw, _ = m.Values[fieldJob].(string)
+	dj.Reason, _ = m.Values["reason"].(string)
+	dj.FailedAt, _ = m.Values["failed_at"].(string)
+	var job Job
+	if json.Unmarshal([]byte(dj.Raw), &job) == nil {
+		dj.Job = &job
+	}
+	return dj
 }
 
 // replayScript moves one dead-letter entry back to the stream.

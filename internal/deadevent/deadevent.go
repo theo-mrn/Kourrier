@@ -120,24 +120,60 @@ func (s *Store) Add(ctx context.Context, e Entry) (string, error) {
 
 // List returns up to count entries, oldest first.
 func (s *Store) List(ctx context.Context, count int64) ([]Entry, error) {
-	msgs, err := s.rdb.XRangeN(ctx, s.key, "-", "+", count).Result()
+	return s.ListAfter(ctx, "", count)
+}
+
+// ListAfter returns up to count entries following the entry ID after (all
+// entries when after is empty), oldest first.
+func (s *Store) ListAfter(ctx context.Context, after string, count int64) ([]Entry, error) {
+	start := "-"
+	if after != "" {
+		start = "(" + after
+	}
+	msgs, err := s.rdb.XRangeN(ctx, s.key, start, "+", count).Result()
 	if err != nil {
 		return nil, fmt.Errorf("deadevent: list: %w", err)
 	}
 	out := make([]Entry, 0, len(msgs))
 	for _, m := range msgs {
-		str := func(k string) string { v, _ := m.Values[k].(string); return v }
-		e := Entry{
-			ID: m.ID, Tenant: str("tenant"), Source: str("source"), Reason: Reason(str("reason")),
-			Detail: str("detail"), Event: []byte(str("event")),
-		}
-		if r := str("routes"); r != "" {
-			e.Routes = strings.Split(r, ",")
-		}
-		e.FailedAt, _ = time.Parse(time.RFC3339Nano, str("failed_at"))
-		out = append(out, e)
+		out = append(out, decode(m))
 	}
 	return out, nil
+}
+
+// Get returns the entries with the given IDs that still exist, in the order
+// of ids.
+func (s *Store) Get(ctx context.Context, ids ...string) ([]Entry, error) {
+	cmds := make([]*redis.XMessageSliceCmd, len(ids))
+	_, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		for i, id := range ids {
+			cmds[i] = p.XRange(ctx, s.key, id, id)
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return nil, fmt.Errorf("deadevent: get: %w", err)
+	}
+	out := make([]Entry, 0, len(ids))
+	for _, c := range cmds {
+		for _, m := range c.Val() {
+			out = append(out, decode(m))
+		}
+	}
+	return out, nil
+}
+
+func decode(m redis.XMessage) Entry {
+	str := func(k string) string { v, _ := m.Values[k].(string); return v }
+	e := Entry{
+		ID: m.ID, Tenant: str("tenant"), Source: str("source"), Reason: Reason(str("reason")),
+		Detail: str("detail"), Event: []byte(str("event")),
+	}
+	if r := str("routes"); r != "" {
+		e.Routes = strings.Split(r, ",")
+	}
+	e.FailedAt, _ = time.Parse(time.RFC3339Nano, str("failed_at"))
+	return e
 }
 
 // Delete removes entries, typically after a successful replay.
