@@ -59,8 +59,9 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 
 	checks := map[string]api.Check{"redis": func(ctx context.Context) error { return rdb.Ping(ctx).Err() }}
 	var (
-		apiServer *http.Server
-		pool      *worker.Pool
+		apiServer     *http.Server
+		consoleServer *http.Server
+		pool          *worker.Pool
 		// ingress components (event consumers) stop first at shutdown,
 		// background components with the workers; an error is fatal.
 		ingress    []func(context.Context) error
@@ -116,6 +117,15 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 			MaxEventBytes: cfg.Events.MaxBytes,
 		})
 		apiServer = newHTTPServer(cfg.HTTPAddr, srv.Handler(), logger)
+		if cfg.Console.Enabled {
+			consoleServer, err = newConsole(cfg, consoleDeps{
+				version: version, tenants: tenants, queue: q, statuses: statuses, activity: feed,
+				templates: renderer, events: events,
+			}, logger)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	if cfg.RunsWorkers() {
@@ -154,7 +164,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 
 	// Lifecycle: servers and workers run until ctx is cancelled, then shut
 	// down in order (stop accepting requests, drain workers).
-	errCh := make(chan error, 2+len(ingress)+len(background))
+	errCh := make(chan error, 3+len(ingress)+len(background))
 	serve := func(s *http.Server, name string) {
 		logger.Info("http server listening", "server", name, "addr", s.Addr)
 		if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -164,6 +174,9 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	go serve(adminServer, "admin")
 	if apiServer != nil {
 		go serve(apiServer, "api")
+	}
+	if consoleServer != nil {
+		go serve(consoleServer, "console")
 	}
 
 	start := func(wg *sync.WaitGroup, ctx context.Context, fns []func(context.Context) error) {
@@ -220,6 +233,9 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	wait(&ingressWG, "events")
 	stopWork()
 	wait(&wg, "jobs")
+	if consoleServer != nil {
+		_ = consoleServer.Shutdown(shutdownCtx)
+	}
 	_ = adminServer.Shutdown(shutdownCtx)
 	logger.Info("kourrier stopped")
 	return runErr

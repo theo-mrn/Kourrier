@@ -76,6 +76,26 @@ func newRouter(routes []*Route) *Router {
 	return r
 }
 
+// Info describes a route for display, e.g. in the console (ADR 016).
+type Info struct {
+	Name     string   `json:"name"`
+	Tenant   string   `json:"tenant"`
+	Template string   `json:"template"`
+	Types    []string `json:"types"`
+	Source   string   `json:"source,omitempty"`
+	When     string   `json:"when,omitempty"`
+}
+
+// Info returns the description of the route, with its CEL condition as
+// written in the routes file.
+func (rt *Route) Info() Info {
+	info := Info{Name: rt.Name, Tenant: rt.Tenant, Template: rt.Template, Types: slices.Clone(rt.types), Source: rt.source}
+	if rt.when != nil {
+		info.When = rt.when.source
+	}
+	return info
+}
+
 // Routes returns every route, in declaration order.
 func (r *Router) Routes() []*Route { return slices.Clone(r.routes) }
 
