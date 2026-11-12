@@ -5,3 +5,5 @@ tmp
 deploy
 docs
 *.md
+web/console/node_modules
+internal/console/dist

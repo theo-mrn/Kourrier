@@ -33,3 +33,18 @@ func TestValidate(t *testing.T) {
 		})
 	}
 }
+
+func TestConsoleValidation(t *testing.T) {
+	t.Setenv("KOURRIER_CONSOLE_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("the console must require a token file")
+	}
+	t.Setenv("KOURRIER_CONSOLE_TOKEN_FILE", "/run/secrets/console-token")
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KOURRIER_MODE", "worker")
+	if _, err := Load(); err == nil {
+		t.Fatal("the console runs with the API only")
+	}
+}

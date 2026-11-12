@@ -45,6 +45,7 @@ Toute la configuration passe par des variables d'environnement préfixées `KOUR
 | `KOURRIER_RATE_LIMIT_SCOPE` | `global` | `global` (partagé via Redis) ou `local` (par Pod). |
 | `KOURRIER_IDEMPOTENCY_TTL` | `24h` | Durée de mémorisation des `Idempotency-Key`. |
 | `KOURRIER_STATUS_TTL` | `168h` | Durée de conservation des statuts. |
+| `KOURRIER_ACTIVITY_MAX_LEN` | `10000` | Nombre approximatif d'entrées du fil d'activité (derniers changements de statut, destinataires masqués, [ADR 016](adr/0016-console-d-administration.md)). `0` le désactive. |
 
 ## Templates et stockage
 
@@ -89,6 +90,18 @@ Active quand `KOURRIER_EVENTS_ROUTES_FILE` est renseigné, dans les modes `all` 
 | `KOURRIER_EVENTS_NATS_NKEY_FILE` | | Fichier de seed NKey. |
 | `KOURRIER_EVENTS_NATS_TLS_CA_FILE` | | CA du serveur NATS. |
 | `KOURRIER_EVENTS_NATS_TLS_CERT_FILE` / `_KEY_FILE` | | Certificat client (mTLS), à fournir ensemble. |
+
+## Console d'administration
+
+Désactivée par défaut ([ADR 016](adr/0016-console-d-administration.md), guide : [console.md](console.md)). Elle tourne avec l'API (modes `all` et `api`).
+
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| `KOURRIER_CONSOLE_ENABLED` | `false` | Active la console web. |
+| `KOURRIER_CONSOLE_ADDR` | `:8081` | Adresse d'écoute, distincte de l'API publique. |
+| `KOURRIER_CONSOLE_TOKEN_FILE` | | Fichier du jeton administrateur (au moins 32 caractères), monté depuis un Secret. Obligatoire si la console est activée. |
+| `KOURRIER_CONSOLE_SESSION_TTL` | `12h` | Durée d'une session. |
+| `KOURRIER_CONSOLE_SECURE_COOKIE` | `true` | Attribut `Secure` du cookie de session. À désactiver seulement pour servir la console en HTTP sur un réseau de confiance (en local). |
 
 ## AWS SES en production
 

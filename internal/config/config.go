@@ -50,10 +50,12 @@ type Config struct {
 	RateLimit   RateLimit   `envPrefix:"RATE_LIMIT_"`
 	Idempotency Idempotency `envPrefix:"IDEMPOTENCY_"`
 	Status      Status      `envPrefix:"STATUS_"`
+	Activity    Activity    `envPrefix:"ACTIVITY_"`
 	Templates   Templates   `envPrefix:"TEMPLATES_"`
 	Storage     Storage     `envPrefix:"STORAGE_"`
 	Mailer      Mailer      `envPrefix:"MAILER_"`
 	Events      Events      `envPrefix:"EVENTS_"`
+	Console     Console     `envPrefix:"CONSOLE_"`
 }
 
 // Redis connection settings. Requires Redis >= 7.
@@ -191,6 +193,26 @@ type NATS struct {
 	TLSKeyFile  string `env:"TLS_KEY_FILE"`
 }
 
+// Activity configures the feed of recent status changes (ADR 016).
+type Activity struct {
+	// MaxLen is the approximate number of entries kept. 0 disables the feed.
+	MaxLen int64 `env:"MAX_LEN" envDefault:"10000"`
+}
+
+// Console configures the web administration console (ADR 016). It runs
+// with the API (modes "all" and "api").
+type Console struct {
+	Enabled bool   `env:"ENABLED" envDefault:"false"`
+	Addr    string `env:"ADDR" envDefault:":8081"`
+	// TokenFile holds the admin token (at least 32 characters), typically
+	// mounted from a Secret.
+	TokenFile  string        `env:"TOKEN_FILE"`
+	SessionTTL time.Duration `env:"SESSION_TTL" envDefault:"12h"`
+	// SecureCookie sets the Secure attribute of the session cookie. Disable it
+	// only to serve the console over plain HTTP on a trusted network.
+	SecureCookie bool `env:"SECURE_COOKIE" envDefault:"true"`
+}
+
 // Load parses the environment and validates the result.
 func Load() (*Config, error) {
 	var c Config
@@ -229,6 +251,12 @@ func (c *Config) Validate() error {
 	check(c.Storage.Provider != StorageS3 || c.Storage.S3.Bucket != "", "KOURRIER_STORAGE_S3_BUCKET is required")
 	check(c.Redis.WaitReplicas >= 0 && c.Redis.WaitTimeout > 0,
 		"KOURRIER_REDIS_WAIT_REPLICAS must be >= 0 and KOURRIER_REDIS_WAIT_TIMEOUT > 0")
+	check(c.Activity.MaxLen >= 0, "KOURRIER_ACTIVITY_MAX_LEN must be >= 0")
+	if c.Console.Enabled {
+		check(c.RunsAPI(), "KOURRIER_CONSOLE_ENABLED requires KOURRIER_MODE all or api")
+		check(c.Console.TokenFile != "", "KOURRIER_CONSOLE_TOKEN_FILE is required when the console is enabled")
+		check(c.Console.SessionTTL > 0, "KOURRIER_CONSOLE_SESSION_TTL must be > 0")
+	}
 	check(c.Events.MaxQueueDepth >= 0, "KOURRIER_EVENTS_MAX_QUEUE_DEPTH must be >= 0")
 	check(c.Events.MaxBytes >= 1024, "KOURRIER_EVENTS_MAX_BYTES must be >= 1024")
 	check(c.Events.DeadLetterMaxLen >= 1, "KOURRIER_EVENTS_DEAD_LETTER_MAX_LEN must be >= 1")

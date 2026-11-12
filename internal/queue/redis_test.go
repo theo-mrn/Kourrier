@@ -227,6 +227,40 @@ func TestEnqueueAtomic(t *testing.T) {
 	}
 }
 
+func TestEnqueueAtomicAppendsToStream(t *testing.T) {
+	mr, rdb := setup(t)
+	q := newTestQueue(t, "c1", rdb)
+	ctx := context.Background()
+	feed := func(id string) Write {
+		return Write{Key: "{kourrier}:feed", Fields: []string{"email", id, "state", "queued"}, MaxLen: 100}
+	}
+	guard := &Write{Key: "{kourrier}:idem:k", Value: []byte("record"), TTL: time.Hour}
+
+	if _, err := q.EnqueueAtomic(ctx, job("1"), guard, feed("1")); err != nil {
+		t.Fatal(err)
+	}
+	// A guarded no-op appends nothing either.
+	if _, err := q.EnqueueAtomic(ctx, job("2"), guard, feed("2")); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := mr.Stream("{kourrier}:feed")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("feed = %+v, %v", entries, err)
+	}
+	if got := entries[0].Values; len(got) != 4 || got[1] != "1" || got[3] != "queued" {
+		t.Fatalf("entry = %v", got)
+	}
+
+	for _, bad := range []Write{
+		{Key: "{kourrier}:feed", Fields: []string{"odd"}, MaxLen: 100},
+		{Key: "{kourrier}:feed", Fields: []string{"k", "v"}},
+	} {
+		if _, err := q.EnqueueAtomic(ctx, job("3"), nil, bad); err == nil {
+			t.Fatalf("invalid stream write %+v accepted", bad)
+		}
+	}
+}
+
 func TestEnqueueAtomicWaitsForReplicas(t *testing.T) {
 	_, rdb := setup(t)
 	q, err := NewRedisStreams(context.Background(), rdb, RedisConfig{
@@ -239,5 +273,36 @@ func TestEnqueueAtomicWaitsForReplicas(t *testing.T) {
 	_, err = q.EnqueueAtomic(context.Background(), job("1"), nil)
 	if !errors.Is(err, ErrNotReplicated) {
 		t.Fatalf("err = %v, want ErrNotReplicated", err)
+	}
+}
+
+func TestDeadLetterLookupAndDelete(t *testing.T) {
+	_, rdb := setup(t)
+	q := newTestQueue(t, "c1", rdb)
+	ctx := context.Background()
+	for _, id := range []string{"j1", "j2", "j3"} {
+		_ = q.Enqueue(ctx, job(id))
+		if err := q.DeadLetter(ctx, receive(t, q), "boom "+id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := q.ListDead(ctx, 10)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("ListDead = %+v, %v", all, err)
+	}
+	page, err := q.ListDeadAfter(ctx, all[0].ID, 10)
+	if err != nil || len(page) != 2 || page[0].Job.ID != "j2" {
+		t.Fatalf("ListDeadAfter = %+v, %v", page, err)
+	}
+
+	got, err := q.DeadJobs(ctx, all[2].ID, "0-1", all[0].ID)
+	if err != nil || len(got) != 2 || got[0].Job.ID != "j3" || got[1].Job.ID != "j1" {
+		t.Fatalf("DeadJobs = %+v, %v", got, err)
+	}
+	if n, err := q.DeleteDead(ctx, all[1].ID, "0-1"); err != nil || n != 1 {
+		t.Fatalf("DeleteDead = %d, %v", n, err)
+	}
+	if s := stats(t, q); s.Dead != 2 {
+		t.Fatalf("dead = %d, want 2", s.Dead)
 	}
 }

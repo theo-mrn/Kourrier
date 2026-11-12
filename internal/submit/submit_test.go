@@ -12,6 +12,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/theo-mrn/kourrier/internal/activity"
 	"github.com/theo-mrn/kourrier/internal/idempotency"
 	"github.com/theo-mrn/kourrier/internal/mail"
 	"github.com/theo-mrn/kourrier/internal/observability"
@@ -40,7 +41,8 @@ func newService(t *testing.T) (*Service, *queue.RedisStreams, *status.Store) {
 	statuses := status.NewStore(rdb, "kourrier", time.Hour)
 	return New(Deps{
 		Queue: q, Idempotency: idempotency.NewStore("kourrier", time.Hour), Statuses: statuses,
-		Metrics: observability.NewMetrics("test"), Logger: logger,
+		Activity: activity.NewStore(rdb, "kourrier", 100),
+		Metrics:  observability.NewMetrics("test"), Logger: logger,
 	}), q, statuses
 }
 
@@ -146,5 +148,28 @@ func TestSubmitChecksTemplate(t *testing.T) {
 	}
 	if err := submitTemplate("welcome"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSubmitRecordsQueuedActivity(t *testing.T) {
+	s, _, _ := newService(t)
+	ctx := context.Background()
+	r := &Request{Tenant: shop, Mail: request("jane@example.com"), Origin: OriginEvent, IdempotencyKey: "k", Fingerprint: "f"}
+	res, err := s.Submit(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An idempotent replay creates no job, hence no entry.
+	if again, err := s.Submit(ctx, r); err != nil || !again.Replayed {
+		t.Fatalf("replay = %+v, %v", again, err)
+	}
+	page, err := s.activity.List(ctx, activity.Query{})
+	if err != nil || len(page.Entries) != 1 {
+		t.Fatalf("activity = %+v, %v", page, err)
+	}
+	e := page.Entries[0]
+	if e.EmailID != res.JobID || e.State != status.Queued || e.Origin != "event" || e.Template != "welcome" ||
+		len(e.To) != 1 || e.To[0] == "jane@example.com" {
+		t.Fatalf("entry = %+v", e)
 	}
 }

@@ -52,6 +52,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/* The event ingress runs with the API, when routes are configured. */}}
+{{- define "kourrier.consoleEnabled" -}}
+{{- if and .Values.console.enabled (include "kourrier.runsAPI" .) }}true{{ end }}
+{{- end }}
+
 {{- define "kourrier.eventsEnabled" -}}
 {{- if and (include "kourrier.runsAPI" .) (or .Values.events.routes .Values.events.existingConfigMap) }}true{{ end }}
 {{- end }}

@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -204,6 +205,16 @@ func (r *Registry) Get(id string) (*Tenant, bool) {
 
 // Len returns the number of tenants.
 func (r *Registry) Len() int { return len(r.byID) }
+
+// All returns the tenants sorted by ID.
+func (r *Registry) All() []*Tenant {
+	out := make([]*Tenant, 0, len(r.byID))
+	for _, t := range r.byID {
+		out = append(out, t)
+	}
+	slices.SortFunc(out, func(a, b *Tenant) int { return strings.Compare(a.ID, b.ID) })
+	return out
+}
 
 // GenerateKey returns a new random API key and its hex SHA-256 digest.
 func GenerateKey() (key, digest string, err error) {

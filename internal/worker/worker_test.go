@@ -11,6 +11,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/theo-mrn/kourrier/internal/activity"
 	"github.com/theo-mrn/kourrier/internal/mail"
 	"github.com/theo-mrn/kourrier/internal/observability"
 	"github.com/theo-mrn/kourrier/internal/provider/memory"
@@ -25,6 +26,7 @@ type fixture struct {
 	pool     *Pool
 	queue    *queue.RedisStreams
 	statuses *status.Store
+	activity *activity.Store
 	mailer   *memory.Provider
 	metrics  *observability.Metrics
 }
@@ -43,6 +45,7 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{
 		queue:    q,
 		statuses: status.NewStore(rdb, "kourrier", time.Hour),
+		activity: activity.NewStore(rdb, "kourrier", 100),
 		mailer:   memory.New(),
 		metrics:  observability.NewMetrics("test"),
 	}
@@ -55,6 +58,7 @@ func newFixture(t *testing.T) *fixture {
 		Renderer: templates.NewRenderer(store, templates.Options{DefaultLocale: "en"}),
 		Provider: f.mailer,
 		Statuses: f.statuses,
+		Activity: f.activity,
 		Metrics:  f.metrics,
 		Logger:   logger,
 	})
@@ -245,4 +249,24 @@ type blockingLimiter struct{}
 func (blockingLimiter) Wait(ctx context.Context) error {
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+func TestProcessRecordsActivity(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.mailer.FailNext(errors.New("421 try later"))
+	f.pool.Process(ctx, f.enqueue(t, templateRequest()))
+	f.pool.Process(ctx, f.enqueue(t, templateRequest()))
+
+	page, err := f.activity.List(ctx, activity.Query{})
+	if err != nil || len(page.Entries) != 2 {
+		t.Fatalf("activity = %+v, %v", page, err)
+	}
+	sent, retry := page.Entries[0], page.Entries[1]
+	if sent.State != status.Sent || sent.Attempt != 1 || sent.Template != "welcome" || sent.Tenant != "yner" {
+		t.Fatalf("sent entry = %+v", sent)
+	}
+	if retry.State != status.Retrying || retry.Error == "" || len(retry.To) != 1 || retry.To[0] == "jane@example.com" {
+		t.Fatalf("retry entry = %+v (recipients must be masked)", retry)
+	}
 }

@@ -29,6 +29,9 @@ type eventIngress struct {
 	// dispatcher is nil when no routes file is configured, which disables
 	// POST /v1/events.
 	dispatcher *dispatch.Dispatcher
+	// routes and dead are shown by the console (ADR 016).
+	routes *routing.Config
+	dead   *deadevent.Store
 	// run lists the components to start (backpressure gate, consumers).
 	run []func(context.Context) error
 }
@@ -53,6 +56,7 @@ func newEventIngress(cfg *config.Config, rdb redis.UniversalClient, tenants *ten
 		in.run = append(in.run, func(ctx context.Context) error { g.Run(ctx); return nil })
 	}
 	dead := NewDeadEvents(cfg, rdb)
+	in.routes, in.dead = routes, dead
 	in.run = append(in.run, func(ctx context.Context) error { collectDeadEvents(ctx, dead, metrics, logger); return nil })
 	var strict []string
 	for _, src := range routes.NATS {

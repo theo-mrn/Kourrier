@@ -4,3 +4,7 @@
 coverage.out
 .env
 .DS_Store
+# Console build output (make console-build), embedded in the binary.
+/internal/console/dist/*
+!/internal/console/dist/.gitkeep
+/web/console/node_modules/

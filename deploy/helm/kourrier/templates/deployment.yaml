@@ -59,6 +59,11 @@ spec:
             - name: metrics
               containerPort: 9090
               protocol: TCP
+            {{- if include "kourrier.consoleEnabled" . }}
+            - name: console
+              containerPort: 8081
+              protocol: TCP
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "kourrier.fullname" . }}
@@ -118,6 +123,13 @@ spec:
                   {{- if not (include "kourrier.runsAPI" .) }}
                   optional: true
                   {{- end }}
+              {{- if include "kourrier.consoleEnabled" . }}
+              - secret:
+                  name: {{ .Values.console.tokenSecret.name }}
+                  items:
+                    - key: {{ .Values.console.tokenSecret.key }}
+                      path: console-token
+              {{- end }}
               {{- if include "kourrier.eventsEnabled" . }}
               - configMap:
                   name: {{ include "kourrier.routesConfigMap" . }}

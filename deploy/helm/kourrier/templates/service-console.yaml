@@ -1,0 +1,21 @@
+{{- if include "kourrier.consoleEnabled" . }}
+# The console has its own Service so that the public API Service and Ingress
+# never expose it (ADR 016). Reach it with kubectl port-forward, or with an
+# Ingress of your own that terminates TLS and restricts access.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kourrier.fullname" . }}-console
+  labels:
+    {{- include "kourrier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "kourrier.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: console
+      port: {{ .Values.console.service.port }}
+      targetPort: console
+      protocol: TCP
+{{- end }}

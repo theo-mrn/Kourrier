@@ -12,7 +12,7 @@ kubectl exec deploy/kourrier -- kourrier dlq list -n 50
 kubectl exec deploy/kourrier -- kourrier dlq replay -n 50
 ```
 
-Le rejeu remet le compteur de tentatives à zéro. La métrique `kourrier_queue_depth{state="dead"}` et l'alerte `KourrierDeadLetters` signalent toute nouvelle entrée.
+Le rejeu remet le compteur de tentatives à zéro. La [console d'administration](console.md), si elle est activée, permet les mêmes opérations entrée par entrée (consulter, rejouer, supprimer), ainsi que pour les événements en échec. La métrique `kourrier_queue_depth{state="dead"}` et l'alerte `KourrierDeadLetters` signalent toute nouvelle entrée.
 
 ## Ajouter un tenant ou faire tourner une clé
 

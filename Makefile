@@ -11,6 +11,7 @@ GOVULNCHECK_VERSION   := v1.9.0
 export KOURRIER_PORT ?= 8180
 export KOURRIER_ADMIN_PORT ?= 9190
 export REDIS_PORT ?= 6390
+export KOURRIER_CONSOLE_PORT ?= 8181
 COMPOSE_FULL := docker compose -f docker-compose.yml -f docker-compose.full.yml
 
 .DEFAULT_GOAL := help
@@ -54,12 +55,17 @@ run: ## Run from source with its own Redis; e-mails are printed in this terminal
 	KOURRIER_TEMPLATES_CACHE_TTL=0s \
 	KOURRIER_RATE_LIMIT_PER_SECOND=0 \
 	KOURRIER_MAILER_PROVIDER=console \
+	KOURRIER_CONSOLE_ENABLED=true \
+	KOURRIER_CONSOLE_ADDR=127.0.0.1:$(KOURRIER_CONSOLE_PORT) \
+	KOURRIER_CONSOLE_TOKEN_FILE=dev/console-token \
+	KOURRIER_CONSOLE_SECURE_COOKIE=false \
 	go run ./cmd/kourrier
 
 .PHONY: up
 up: ## Start Redis, NATS and Kourrier in Docker; e-mails go to the console (make logs)
 	docker compose up --build -d --wait
 	@echo "API: http://localhost:$(KOURRIER_PORT)  Metrics: http://localhost:$(KOURRIER_ADMIN_PORT)/metrics"
+	@echo "Console: http://localhost:$(KOURRIER_CONSOLE_PORT) (token in dev/console-token)"
 	@echo "Send the demo e-mail with 'make send', read it with 'make logs'."
 
 .PHONY: up-full
@@ -116,6 +122,27 @@ event-http: ## Push the demo CloudEvent to the HTTP sink (POST /v1/events)
 routes-check: ## Validate the example routes file
 	go run ./cmd/kourrier routes check -tenants dev/tenants.yaml examples/routes.yaml
 
+CONSOLE := pnpm --dir web/console
+
+.PHONY: console-install
+console-install: ## Install the web console dependencies (Node 24, pnpm)
+	$(CONSOLE) install --frozen-lockfile
+
+.PHONY: console-build
+console-build: console-install ## Build the web console into the binary (then make build)
+	$(CONSOLE) build
+
+.PHONY: console-dev
+console-dev: console-install ## Serve the console with hot reload against the local stack (make up)
+	$(CONSOLE) dev
+
+.PHONY: console-check
+console-check: console-install ## Check formatting, lint, type-check and test the web console
+	$(CONSOLE) format:check
+	$(CONSOLE) lint
+	$(CONSOLE) typecheck
+	$(CONSOLE) test
+
 .PHONY: docker
 docker: ## Build the container image
 	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
@@ -125,3 +152,4 @@ helm-lint: ## Lint and render the Helm chart
 	helm lint deploy/helm/kourrier
 	helm template kourrier deploy/helm/kourrier >/dev/null
 	helm template kourrier deploy/helm/kourrier -f deploy/helm/kourrier/ci/events-values.yaml >/dev/null
+	helm template kourrier deploy/helm/kourrier -f deploy/helm/kourrier/ci/console-values.yaml >/dev/null

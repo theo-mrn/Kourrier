@@ -125,16 +125,22 @@ func (q *RedisStreams) Enqueue(ctx context.Context, job *Job) error {
 	return nil
 }
 
-// Write is a key written atomically with a job by EnqueueAtomic.
+// Write is written atomically with a job by EnqueueAtomic: a string key
+// (Value with a TTL) or, when Fields is set, an entry appended to a stream
+// trimmed to about MaxLen entries.
 type Write struct {
 	Key   string
 	Value []byte
 	TTL   time.Duration
+	// Fields are the field/value pairs of a stream entry.
+	Fields []string
+	MaxLen int64
 }
 
 // enqueueAtomicScript writes the extra keys and adds the job in one step.
-// With a guard (ARGV[2] = "1"), KEYS[2] is a SET NX: when it already exists,
-// its value is returned and nothing is written.
+// Each extra key comes with its kind ("set" or "xadd") and arguments. With a
+// guard (ARGV[2] = "1"), KEYS[2] is a SET NX: when it already exists, its
+// value is returned and nothing is written.
 var enqueueAtomicScript = redis.NewScript(`
 if ARGV[2] == '1' then
   local prev = redis.call('GET', KEYS[2])
@@ -142,8 +148,16 @@ if ARGV[2] == '1' then
 end
 local argi = 3
 for i = 2, #KEYS do
-  redis.call('SET', KEYS[i], ARGV[argi], 'PX', ARGV[argi + 1])
-  argi = argi + 2
+  if ARGV[argi] == 'set' then
+    redis.call('SET', KEYS[i], ARGV[argi + 1], 'PX', ARGV[argi + 2])
+    argi = argi + 3
+  else
+    local n = tonumber(ARGV[argi + 2])
+    local fields = {}
+    for j = 1, n do fields[j] = ARGV[argi + 2 + j] end
+    redis.call('XADD', KEYS[i], 'MAXLEN', '~', ARGV[argi + 1], '*', unpack(fields))
+    argi = argi + 3 + n
+  end
 end
 redis.call('XADD', KEYS[1], '*', 'job', ARGV[1])
 return false
@@ -169,13 +183,23 @@ func (q *RedisStreams) EnqueueAtomic(ctx context.Context, job *Job, guard *Write
 		args[1] = "1"
 		all = append([]Write{*guard}, writes...)
 	}
-	for _, w := range all {
+	for i, w := range all {
+		keys = append(keys, w.Key)
+		if w.Fields != nil {
+			if (guard != nil && i == 0) || len(w.Fields)%2 != 0 || w.MaxLen <= 0 {
+				return nil, fmt.Errorf("queue: invalid stream write on %q", w.Key)
+			}
+			args = append(args, "xadd", w.MaxLen, len(w.Fields))
+			for _, f := range w.Fields {
+				args = append(args, f)
+			}
+			continue
+		}
 		ttl := w.TTL.Milliseconds()
 		if ttl <= 0 {
 			return nil, fmt.Errorf("queue: key %q needs a positive TTL", w.Key)
 		}
-		keys = append(keys, w.Key)
-		args = append(args, w.Value, ttl)
+		args = append(args, "set", w.Value, ttl)
 	}
 	prev, err := enqueueAtomicScript.Run(ctx, q.rdb, keys, args...).Text()
 	switch {
@@ -428,23 +452,71 @@ type DeadJob struct {
 
 // ListDead returns up to count dead-letter entries, oldest first.
 func (q *RedisStreams) ListDead(ctx context.Context, count int64) ([]DeadJob, error) {
-	msgs, err := q.rdb.XRangeN(ctx, q.dead, "-", "+", count).Result()
+	return q.ListDeadAfter(ctx, "", count)
+}
+
+// ListDeadAfter returns up to count dead-letter entries following the entry
+// ID after (from the oldest when after is empty).
+func (q *RedisStreams) ListDeadAfter(ctx context.Context, after string, count int64) ([]DeadJob, error) {
+	start := "-"
+	if after != "" {
+		start = "(" + after
+	}
+	msgs, err := q.rdb.XRangeN(ctx, q.dead, start, "+", count).Result()
 	if err != nil {
 		return nil, fmt.Errorf("queue: list dead: %w", err)
 	}
 	out := make([]DeadJob, 0, len(msgs))
 	for _, m := range msgs {
-		dj := DeadJob{ID: m.ID}
-		dj.Raw, _ = m.Values[fieldJob].(string)
-		dj.Reason, _ = m.Values["reason"].(string)
-		dj.FailedAt, _ = m.Values["failed_at"].(string)
-		var job Job
-		if json.Unmarshal([]byte(dj.Raw), &job) == nil {
-			dj.Job = &job
-		}
-		out = append(out, dj)
+		out = append(out, decodeDead(m))
 	}
 	return out, nil
+}
+
+// DeadJobs returns the dead-letter entries with the given IDs that still
+// exist, in the order of ids.
+func (q *RedisStreams) DeadJobs(ctx context.Context, ids ...string) ([]DeadJob, error) {
+	cmds := make([]*redis.XMessageSliceCmd, len(ids))
+	_, err := q.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		for i, id := range ids {
+			cmds[i] = p.XRange(ctx, q.dead, id, id)
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return nil, fmt.Errorf("queue: get dead: %w", err)
+	}
+	out := make([]DeadJob, 0, len(ids))
+	for _, c := range cmds {
+		for _, m := range c.Val() {
+			out = append(out, decodeDead(m))
+		}
+	}
+	return out, nil
+}
+
+// DeleteDead removes dead-letter entries and returns how many existed.
+func (q *RedisStreams) DeleteDead(ctx context.Context, ids ...string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	n, err := q.rdb.XDel(ctx, q.dead, ids...).Result()
+	if err != nil {
+		return 0, fmt.Errorf("queue: delete dead: %w", err)
+	}
+	return n, nil
+}
+
+func decodeDead(m redis.XMessage) DeadJob {
+	dj := DeadJob{ID: m.ID}
+	dj.Raw, _ = m.Values[fieldJob].(string)
+	dj.Reason, _ = m.Values["reason"].(string)
+	dj.FailedAt, _ = m.Values["failed_at"].(string)
+	var job Job
+	if json.Unmarshal([]byte(dj.Raw), &job) == nil {
+		dj.Job = &job
+	}
+	return dj
 }
 
 // replayScript moves one dead-letter entry back to the stream.

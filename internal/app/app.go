@@ -16,6 +16,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/theo-mrn/kourrier/internal/activity"
 	"github.com/theo-mrn/kourrier/internal/api"
 	"github.com/theo-mrn/kourrier/internal/config"
 	"github.com/theo-mrn/kourrier/internal/idempotency"
@@ -54,11 +55,13 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		return err
 	}
 	statuses := status.NewStore(rdb, cfg.Redis.KeyPrefix, cfg.Status.TTL)
+	feed := NewActivity(cfg, rdb)
 
 	checks := map[string]api.Check{"redis": func(ctx context.Context) error { return rdb.Ping(ctx).Err() }}
 	var (
-		apiServer *http.Server
-		pool      *worker.Pool
+		apiServer     *http.Server
+		consoleServer *http.Server
+		pool          *worker.Pool
 		// ingress components (event consumers) stop first at shutdown,
 		// background components with the workers; an error is fatal.
 		ingress    []func(context.Context) error
@@ -93,6 +96,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 			Idempotency: idempotency.NewStore(cfg.Redis.KeyPrefix, cfg.Idempotency.TTL),
 			Statuses:    statuses,
 			Templates:   renderer,
+			Activity:    feed,
 			Metrics:     metrics,
 			Logger:      logger,
 		})
@@ -113,6 +117,15 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 			MaxEventBytes: cfg.Events.MaxBytes,
 		})
 		apiServer = newHTTPServer(cfg.HTTPAddr, srv.Handler(), logger)
+		if cfg.Console.Enabled {
+			consoleServer, err = newConsole(cfg, consoleDeps{
+				version: version, tenants: tenants, queue: q, statuses: statuses, activity: feed,
+				templates: renderer, events: events,
+			}, logger)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	if cfg.RunsWorkers() {
@@ -137,6 +150,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 			Provider: mailer,
 			Limiter:  NewLimiter(cfg.RateLimit, rdb, cfg.Redis.KeyPrefix),
 			Statuses: statuses,
+			Activity: feed,
 			Metrics:  metrics,
 			Logger:   logger,
 		})
@@ -150,7 +164,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 
 	// Lifecycle: servers and workers run until ctx is cancelled, then shut
 	// down in order (stop accepting requests, drain workers).
-	errCh := make(chan error, 2+len(ingress)+len(background))
+	errCh := make(chan error, 3+len(ingress)+len(background))
 	serve := func(s *http.Server, name string) {
 		logger.Info("http server listening", "server", name, "addr", s.Addr)
 		if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -160,6 +174,9 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	go serve(adminServer, "admin")
 	if apiServer != nil {
 		go serve(apiServer, "api")
+	}
+	if consoleServer != nil {
+		go serve(consoleServer, "console")
 	}
 
 	start := func(wg *sync.WaitGroup, ctx context.Context, fns []func(context.Context) error) {
@@ -216,9 +233,21 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	wait(&ingressWG, "events")
 	stopWork()
 	wait(&wg, "jobs")
+	if consoleServer != nil {
+		_ = consoleServer.Shutdown(shutdownCtx)
+	}
 	_ = adminServer.Shutdown(shutdownCtx)
 	logger.Info("kourrier stopped")
 	return runErr
+}
+
+// NewActivity returns the activity feed (ADR 016), or nil when it is
+// disabled.
+func NewActivity(cfg *config.Config, rdb redis.UniversalClient) *activity.Store {
+	if cfg.Activity.MaxLen <= 0 {
+		return nil
+	}
+	return activity.NewStore(rdb, cfg.Redis.KeyPrefix, cfg.Activity.MaxLen)
 }
 
 // NewRedis creates the Redis client, sized for the given number of workers.

@@ -45,3 +45,28 @@ func TestStore(t *testing.T) {
 		t.Fatalf("Len() = %d, %v", n, err)
 	}
 }
+
+func TestStoreLookup(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	s := NewStore(rdb, "kourrier", 100)
+	ctx := context.Background()
+
+	var ids []string
+	for _, tenant := range []string{"a", "b", "c"} {
+		id, err := s.Add(ctx, Entry{Tenant: tenant, Source: "http", Reason: Rejected, Event: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	page, err := s.ListAfter(ctx, ids[0], 10)
+	if err != nil || len(page) != 2 || page[0].Tenant != "b" {
+		t.Fatalf("ListAfter() = %+v, %v", page, err)
+	}
+	got, err := s.Get(ctx, ids[2], "0-1", ids[0])
+	if err != nil || len(got) != 2 || got[0].Tenant != "c" || got[1].Tenant != "a" {
+		t.Fatalf("Get() = %+v, %v", got, err)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/theo-mrn/kourrier/internal/activity"
 	"github.com/theo-mrn/kourrier/internal/mail"
 	"github.com/theo-mrn/kourrier/internal/observability"
 	"github.com/theo-mrn/kourrier/internal/provider"
@@ -50,6 +51,7 @@ type Pool struct {
 	provider provider.Provider
 	limiter  ratelimit.Limiter
 	statuses StatusStore
+	activity *activity.Store
 	metrics  *observability.Metrics
 	logger   *slog.Logger
 	now      func() time.Time
@@ -62,6 +64,8 @@ type Deps struct {
 	Provider provider.Provider
 	Limiter  ratelimit.Limiter
 	Statuses StatusStore
+	// Activity feeds the activity feed (ADR 016). Nil disables it.
+	Activity *activity.Store
 	Metrics  *observability.Metrics
 	Logger   *slog.Logger
 }
@@ -82,7 +86,7 @@ func New(cfg Config, d Deps) *Pool {
 	}
 	return &Pool{
 		cfg: cfg, queue: d.Queue, renderer: d.Renderer, provider: d.Provider,
-		limiter: d.Limiter, statuses: d.Statuses, metrics: d.Metrics, logger: d.Logger,
+		limiter: d.Limiter, statuses: d.Statuses, activity: d.Activity, metrics: d.Metrics, logger: d.Logger,
 		now: time.Now,
 	}
 }
@@ -175,7 +179,7 @@ func (p *Pool) Process(ctx context.Context, d *queue.Delivery) {
 	p.metrics.SendDuration.WithLabelValues(p.provider.Name(), "success").Observe(elapsed.Seconds())
 
 	job.Attempts++
-	p.putStatus(settleCtx, log, &status.Status{
+	p.putStatus(settleCtx, log, job, &status.Status{
 		ID: job.ID, TenantID: job.TenantID, State: status.Sent, Attempts: job.Attempts,
 		Provider: p.provider.Name(), ProviderMessageID: res.MessageID, CreatedAt: job.EnqueuedAt,
 	})
@@ -235,7 +239,7 @@ func (p *Pool) fail(ctx context.Context, log *slog.Logger, d *queue.Delivery, ca
 			reason = observability.ReasonPermanent
 		}
 		st.State = status.Failed
-		p.putStatus(ctx, log, st)
+		p.putStatus(ctx, log, job, st)
 		if err := p.settle(ctx, func(ctx context.Context) error { return p.queue.DeadLetter(ctx, d, cause.Error()) }); err != nil {
 			log.ErrorContext(ctx, "failed to dead-letter job", "error", err)
 		}
@@ -247,7 +251,7 @@ func (p *Pool) fail(ctx context.Context, log *slog.Logger, d *queue.Delivery, ca
 	delay := p.cfg.Retry.Backoff(job.Attempts)
 	next := p.now().Add(delay).UTC()
 	st.State, st.NextAttemptAt = status.Retrying, &next
-	p.putStatus(ctx, log, st)
+	p.putStatus(ctx, log, job, st)
 	if err := p.settle(ctx, func(ctx context.Context) error { return p.queue.Retry(ctx, d, next) }); err != nil {
 		log.ErrorContext(ctx, "failed to schedule retry", "error", err)
 	}
@@ -269,10 +273,22 @@ func (p *Pool) ack(ctx context.Context, log *slog.Logger, d *queue.Delivery) {
 	}
 }
 
-func (p *Pool) putStatus(ctx context.Context, log *slog.Logger, st *status.Status) {
+func (p *Pool) putStatus(ctx context.Context, log *slog.Logger, job *queue.Job, st *status.Status) {
 	st.UpdatedAt = p.now().UTC()
 	if err := p.settle(ctx, func(ctx context.Context) error { return p.statuses.Put(ctx, st) }); err != nil {
 		log.ErrorContext(ctx, "failed to update status", "error", err)
+	}
+	if p.activity == nil {
+		return
+	}
+	// Best effort: the feed is observability, a failure must not affect the
+	// delivery (ADR 016).
+	entry := activity.Entry{
+		EmailID: job.ID, Tenant: job.TenantID, State: st.State, Template: templateName(job),
+		To: observability.MaskAddresses(job.Request.To), Attempt: st.Attempts, Error: st.LastError, At: st.UpdatedAt,
+	}
+	if err := p.settle(ctx, func(ctx context.Context) error { return p.activity.Record(ctx, entry) }); err != nil {
+		log.WarnContext(ctx, "failed to record activity", "error", err)
 	}
 }
 

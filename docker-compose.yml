@@ -7,6 +7,9 @@
 #   make event       # publish the demo CloudEvent to NATS (examples/routes.yaml)
 #   make logs        # read the e-mails
 #
+# The admin console (ADR 016) is on http://localhost:8181, with the token of
+# dev/console-token.
+#
 # Templates are read from examples/templates on every send: edit a file and
 # send again to see the result. For the production-like drivers (S3 storage and
 # SMTP delivery), use `make up-full` (docker-compose.full.yml).
@@ -25,6 +28,7 @@ services:
     ports:
       - "127.0.0.1:${KOURRIER_PORT:-8180}:8080"
       - "127.0.0.1:${KOURRIER_ADMIN_PORT:-9190}:9090"
+      - "127.0.0.1:${KOURRIER_CONSOLE_PORT:-8181}:8081"
     environment:
       KOURRIER_LOG_FORMAT: text
       KOURRIER_LOG_LEVEL: debug
@@ -38,9 +42,14 @@ services:
       KOURRIER_MAILER_PROVIDER: console
       KOURRIER_EVENTS_ROUTES_FILE: /etc/kourrier/routes.yaml
       KOURRIER_EVENTS_NATS_URL: nats://nats:4222
+      KOURRIER_CONSOLE_ENABLED: "true"
+      KOURRIER_CONSOLE_TOKEN_FILE: /etc/kourrier/console-token
+      # Plain HTTP on localhost only.
+      KOURRIER_CONSOLE_SECURE_COOKIE: "false"
     volumes:
       - ./dev/tenants.yaml:/etc/kourrier/tenants.yaml:ro
       - ./examples/routes.yaml:/etc/kourrier/routes.yaml:ro
+      - ./dev/console-token:/etc/kourrier/console-token:ro
       - ./examples/templates:/templates:ro
 
   # Also used on its own by `make run`, which runs Kourrier from source.

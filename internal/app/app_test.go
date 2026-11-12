@@ -53,6 +53,11 @@ tenants:
 	cfg.Storage.Dir = filepath.Join(dir, "templates")
 	cfg.Mailer.Provider = config.ProviderFilesystem
 	cfg.Mailer.Filesystem.Dir = filepath.Join(dir, "outbox")
+	const consoleToken = "end-to-end-console-token-0123456789"
+	write("console-token", consoleToken+"\n")
+	cfg.Console.Enabled = true
+	cfg.Console.Addr = freeAddr(t)
+	cfg.Console.TokenFile = filepath.Join(dir, "console-token")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -108,6 +113,32 @@ tenants:
 	html, _ := os.ReadFile(files[0])
 	if string(html) != "<h1>Bonjour Jane</h1>" {
 		t.Fatalf("unexpected HTML %q", html)
+	}
+
+	// The console signs in with the admin token and shows the activity of
+	// the e-mail: queued by the API, then sent by the worker.
+	console := "http://" + cfg.Console.Addr
+	login, _ := http.NewRequest(http.MethodPost, console+"/api/session", strings.NewReader(`{"token":"`+consoleToken+`"}`))
+	login.Header.Set("X-Kourrier-Console", "1")
+	resp, err = http.DefaultClient.Do(login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || len(resp.Cookies()) != 1 {
+		t.Fatalf("console sign-in: %d", resp.StatusCode)
+	}
+	activityReq, _ := http.NewRequest(http.MethodGet, console+"/api/activity?email="+accepted.ID, nil)
+	activityReq.AddCookie(resp.Cookies()[0])
+	resp, err = http.DefaultClient.Do(activityReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var feed struct{ Entries []struct{ State string } }
+	_ = json.NewDecoder(resp.Body).Decode(&feed)
+	resp.Body.Close()
+	if len(feed.Entries) != 2 || feed.Entries[0].State != "sent" || feed.Entries[1].State != "queued" {
+		t.Fatalf("console activity = %+v", feed)
 	}
 
 	metrics := get(t, "http://"+cfg.AdminAddr+"/metrics")
