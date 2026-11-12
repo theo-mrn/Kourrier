@@ -1,0 +1,198 @@
+@import "tailwindcss";
+
+/*
+ * Kourrier console design system. Same direction as the landing page: a
+ * sorting office. Paper and ink, the red and blue of airmail, and postmark
+ * inks for statuses: the same state always has the same ink.
+ *
+ *   primitives  → raw values             (--p-*)
+ *   semantic    → what a value is for    (--c-*, --r-*)
+ *   components  → one component's knobs (--airmail, --code-*)
+ */
+
+/* ========== 1. PRIMITIVES ========== */
+:root {
+  --p-paper-50: #fbf9f4;
+  --p-paper-100: #f4f0e7;
+  --p-paper-200: #ebe5d8;
+  --p-paper-300: #ddd5c4;
+  --p-paper-400: #c9bfab;
+
+  --p-ink-900: #15130f;
+  --p-ink-700: #2e2a23;
+  --p-ink-600: #4a463f;
+  --p-ink-500: #625c52;
+
+  --p-red-600: #c0342a;
+  --p-red-100: #f6dcd6;
+  --p-blue-700: #1b4593;
+  --p-blue-600: #2456b3;
+  --p-blue-100: #dbe4f5;
+  --p-green-700: #2c6e47;
+  --p-green-100: #dcebdf;
+  --p-amber-700: #855609;
+  --p-amber-100: #f5e6c8;
+
+  --p-code-bg: #16140f;
+  --p-code-line: #2b2820;
+  --p-code-text: #e9e3d6;
+  --p-code-dim: #9a937f;
+}
+
+/* ========== 2. SEMANTIC ========== */
+:root {
+  --c-page: var(--p-paper-100);
+  --c-card: var(--p-paper-50);
+  --c-sunken: var(--p-paper-200);
+  --c-line: var(--p-paper-300);
+  --c-line-strong: var(--p-paper-400);
+
+  --c-ink: var(--p-ink-900);
+  --c-ink-2: var(--p-ink-600);
+  --c-ink-3: var(--p-ink-500);
+
+  --c-red: var(--p-red-600);
+  --c-red-soft: var(--p-red-100);
+  --c-blue: var(--p-blue-700);
+  --c-blue-soft: var(--p-blue-100);
+
+  /* Statuses, as postmarks. The *-soft fills never carry text. */
+  --c-sent: var(--p-green-700);
+  --c-sent-soft: var(--p-green-100);
+  --c-retrying: var(--p-amber-700);
+  --c-retrying-soft: var(--p-amber-100);
+  --c-failed: var(--p-red-600);
+  --c-failed-soft: var(--p-red-100);
+  --c-queued: var(--p-blue-700);
+  --c-queued-soft: var(--p-blue-100);
+
+  --c-focus: var(--p-blue-600);
+}
+
+/* ========== 3. COMPONENTS ========== */
+:root {
+  --code-bg: var(--p-code-bg);
+  --code-line: var(--p-code-line);
+  --code-text: var(--p-code-text);
+  --code-dim: var(--p-code-dim);
+
+  /* Airmail border: red, paper, blue, paper, at 45° */
+  --airmail: repeating-linear-gradient(
+    -45deg,
+    var(--p-red-600) 0 10px,
+    var(--p-paper-50) 10px 16px,
+    var(--p-blue-700) 16px 26px,
+    var(--p-paper-50) 26px 32px
+  );
+}
+
+/* ========== Tailwind ========== */
+@theme inline {
+  --color-page: var(--c-page);
+  --color-card: var(--c-card);
+  --color-sunken: var(--c-sunken);
+  --color-line: var(--c-line);
+  --color-line-strong: var(--c-line-strong);
+  --color-ink: var(--c-ink);
+  --color-ink-2: var(--c-ink-2);
+  --color-ink-3: var(--c-ink-3);
+  --color-red: var(--c-red);
+  --color-red-soft: var(--c-red-soft);
+  --color-blue: var(--c-blue);
+  --color-blue-soft: var(--c-blue-soft);
+  --color-sent: var(--c-sent);
+  --color-sent-soft: var(--c-sent-soft);
+  --color-retrying: var(--c-retrying);
+  --color-retrying-soft: var(--c-retrying-soft);
+  --color-failed: var(--c-failed);
+  --color-failed-soft: var(--c-failed-soft);
+  --color-queued: var(--c-queued);
+  --color-queued-soft: var(--c-queued-soft);
+  --color-code: var(--code-bg);
+  --color-code-line: var(--code-line);
+  --color-code-text: var(--code-text);
+  --color-code-dim: var(--code-dim);
+
+  --radius-s: 2px;
+  --radius-m: 6px;
+  --radius-l: 10px;
+
+  --font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Bricolage Grotesque Variable", "Instrument Sans Variable", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+}
+
+/* ========== Base ========== */
+html {
+  color-scheme: light;
+  background: var(--c-page);
+}
+
+body {
+  background: var(--c-page);
+  color: var(--c-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: var(--c-ink);
+  color: var(--p-paper-50);
+}
+
+:focus-visible {
+  outline: 2px solid var(--c-focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Display type: Bricolage at its optical size for headlines */
+.display {
+  font-family: var(--font-display);
+  font-variation-settings: "opsz" 72;
+  letter-spacing: -0.03em;
+}
+
+/* Condensed capitals, like the lettering of a rubber stamp */
+.stamp-type {
+  font-family: var(--font-display);
+  font-variation-settings:
+    "wdth" 75,
+    "opsz" 14;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.airmail {
+  background: var(--airmail);
+}
+
+/* Code says what it says: no ligatures turning == into a symbol */
+.font-mono,
+code,
+pre,
+kbd {
+  font-variant-ligatures: none;
+  font-feature-settings:
+    "liga" 0,
+    "calt" 0;
+}
+
+dialog::backdrop {
+  background: rgb(21 19 15 / 0.45);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
