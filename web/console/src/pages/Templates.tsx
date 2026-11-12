@@ -1,18 +1,18 @@
-import { Eye } from "lucide-react";
+import { Eye, FileText } from "@phosphor-icons/react";
 import { useState, type FormEvent } from "react";
 
 import { apiURL } from "../api/client";
 import { previewPath, previewQuery, usePreview, useTemplates, type PreviewRequest } from "../api/hooks";
 import type { TemplateInfo } from "../api/types";
+import { Page } from "../components/Layout";
 import {
   Button,
-  Card,
   CodeBlock,
   EmptyState,
   ErrorNotice,
-  Field,
-  Loading,
-  PageHeader,
+  Label,
+  Select,
+  Skeleton,
   Tag,
   cx,
   inputClass,
@@ -33,7 +33,7 @@ function parseData(raw: string): string | null {
   }
 }
 
-function PreviewPanel({ selected }: { selected: Selected }) {
+function Preview({ selected }: { selected: Selected }) {
   const { tenant, template } = selected;
   const [locale, setLocale] = useState(template.locales[0] ?? "");
   const [data, setData] = useState("{}");
@@ -51,21 +51,31 @@ function PreviewPanel({ selected }: { selected: Selected }) {
   const iframeSrc = request && html ? apiURL(previewPath(request, true), previewQuery(request)) : null;
 
   return (
-    <Card className="p-5">
-      <h2 className="display text-2xl font-semibold">{template.name}</h2>
-      <p className="text-sm text-ink-2">Tenant {tenant}. Nothing is sent: the template is only rendered.</p>
+    <div className="animate-rise p-6">
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="text-xl font-medium tracking-tight">{template.name}</h2>
+        <Label dot={tenant}>{tenant}</Label>
+      </div>
+      <p className="mt-1 text-sm text-ink-3">Render it with sample data. Nothing is sent.</p>
 
-      <form onSubmit={render} className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-[10rem_1fr]">
-        <Field label="Locale">
-          <select className={inputClass} value={locale} onChange={(e) => setLocale(e.target.value)}>
+      <form onSubmit={render} className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-[9rem_1fr_auto] md:items-start">
+        <div>
+          <label htmlFor="locale" className="mb-2 block text-xs text-ink-3">
+            Locale
+          </label>
+          <Select id="locale" className="w-full" value={locale} onChange={(e) => setLocale(e.target.value)}>
             {template.locales.map((l) => (
               <option key={l}>{l}</option>
             ))}
-          </select>
-        </Field>
-        <Field label="Data (JSON)">
+          </Select>
+        </div>
+        <div>
+          <label htmlFor="data" className="mb-2 block text-xs text-ink-3">
+            Data, as a JSON object
+          </label>
           <textarea
-            className={cx(inputClass, "min-h-28 font-mono text-[13px]")}
+            id="data"
+            className={cx(inputClass, "h-24 py-2 font-mono text-xs")}
             value={data}
             onChange={(e) => setData(e.target.value)}
             spellCheck={false}
@@ -73,32 +83,34 @@ function PreviewPanel({ selected }: { selected: Selected }) {
             aria-describedby={invalid ? "data-error" : undefined}
           />
           {invalid && (
-            <span id="data-error" className="text-failed">
+            <p id="data-error" className="mt-1 text-xs text-critical">
               {invalid}
-            </span>
+            </p>
           )}
-        </Field>
-        <div className="sm:col-start-2">
-          <Button type="submit" variant="primary" disabled={Boolean(invalid)} busy={preview.isFetching}>
-            <Eye aria-hidden className="size-4" />
-            Render
-          </Button>
         </div>
+        <Button
+          type="submit"
+          variant="primary"
+          className="md:mt-6"
+          disabled={Boolean(invalid)}
+          busy={preview.isFetching}
+        >
+          <Eye aria-hidden className="size-4" />
+          Render
+        </Button>
       </form>
 
       {preview.error && (
-        <div className="mt-5">
+        <div className="mt-6">
           <ErrorNotice error={preview.error} />
         </div>
       )}
       {preview.data && (
-        <div className="mt-6">
-          <p className="font-mono text-[11px] tracking-wide text-ink-3 uppercase">
-            Subject · locale {preview.data.locale}
-          </p>
-          <p className="display mt-1 text-xl font-semibold">{preview.data.subject}</p>
+        <div className="mt-8">
+          <p className="text-xs text-ink-3">Subject, locale {preview.data.locale}</p>
+          <p className="mt-1 text-base font-medium">{preview.data.subject}</p>
 
-          <div role="tablist" aria-label="Body" className="mt-4 flex gap-1 border-b border-line">
+          <div role="tablist" aria-label="Body" className="mt-4 flex gap-1">
             {(["html", "text"] as const).map((t) => (
               <button
                 key={t}
@@ -107,37 +119,37 @@ function PreviewPanel({ selected }: { selected: Selected }) {
                 aria-selected={tab === t}
                 onClick={() => setTab(t)}
                 className={cx(
-                  "-mb-px border-b-2 px-3 py-2 text-sm font-semibold",
-                  tab === t ? "border-ink text-ink" : "border-transparent text-ink-3 hover:text-ink",
+                  "h-7 rounded-md px-3 text-xs transition-colors duration-200",
+                  tab === t ? "bg-active text-ink" : "text-ink-3 hover:text-ink",
                 )}
               >
                 {t === "html" ? "HTML" : "Text"}
               </button>
             ))}
           </div>
-          <div role="tabpanel" className="mt-4">
+          <div role="tabpanel" className="mt-3">
             {tab === "html" &&
               (iframeSrc ? (
                 // Sandboxed, without scripts, under its own CSP (ADR 016).
                 <iframe
-                  title={`Preview of ${template.name}`}
+                  title={`Rendered ${template.name}`}
                   sandbox=""
                   src={iframeSrc}
-                  className="h-[32rem] w-full rounded-m border border-line bg-white"
+                  className="h-[34rem] w-full rounded-lg border border-line bg-white"
                 />
               ) : (
-                <p className="text-sm text-ink-2">This template has no HTML body.</p>
+                <p className="text-sm text-ink-3">This template has no HTML body.</p>
               ))}
             {tab === "text" &&
               (preview.data.text ? (
                 <CodeBlock>{preview.data.text}</CodeBlock>
               ) : (
-                <p className="text-sm text-ink-2">This template has no text body.</p>
+                <p className="text-sm text-ink-3">This template has no text body.</p>
               ))}
           </div>
         </div>
       )}
-    </Card>
+    </div>
   );
 }
 
@@ -146,58 +158,65 @@ export function Templates() {
   const [selected, setSelected] = useState<Selected>();
 
   return (
-    <>
-      <PageHeader
-        title="Templates"
-        description="The templates of each tenant, read from the template storage, and a preview with your own data."
-      />
-      {isPending && <Loading />}
-      {error && <ErrorNotice error={error} />}
-      {data && (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[18rem_1fr]">
-          <nav aria-label="Templates" className="flex flex-col gap-5">
-            {data.map((t) => (
-              <section key={t.tenant}>
-                <h2 className="stamp-type mb-2 text-xs text-ink-3">{t.tenant}</h2>
-                {t.error && <p className="text-sm text-failed">{t.error}</p>}
-                {!t.error && t.templates.length === 0 && <p className="text-sm text-ink-3">No template.</p>}
-                <ul className="flex flex-col gap-1">
-                  {t.templates.map((tpl) => {
-                    const active = selected?.tenant === t.tenant && selected.template.name === tpl.name;
-                    return (
-                      <li key={tpl.name}>
-                        <button
-                          type="button"
-                          aria-current={active || undefined}
-                          onClick={() => setSelected({ tenant: t.tenant, template: tpl })}
-                          className={cx(
-                            "flex w-full items-center justify-between gap-2 rounded-m border px-3 py-2 text-left text-sm",
-                            active ? "border-ink bg-card" : "border-transparent hover:border-line hover:bg-card",
-                          )}
-                        >
-                          <span className="font-medium">{tpl.name}</span>
-                          <span className="flex gap-1">
-                            {tpl.locales.map((l) => (
-                              <Tag key={l}>{l}</Tag>
-                            ))}
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </section>
-            ))}
-          </nav>
+    <Page title="Templates" description="Read from the template storage of each tenant." padded={false}>
+      {error && (
+        <div className="p-6">
+          <ErrorNotice error={error} />
+        </div>
+      )}
+      <div className="flex min-h-full flex-col md:flex-row">
+        <nav aria-label="Templates" className="shrink-0 border-b border-line py-3 md:w-72 md:border-r md:border-b-0">
+          {isPending && (
+            <div role="status" aria-label="Loading" className="flex flex-col gap-2 px-3">
+              {Array.from({ length: 6 }, (_, i) => (
+                <Skeleton key={i} className="h-8" />
+              ))}
+            </div>
+          )}
+          {data?.map((t) => (
+            <div key={t.tenant} className="mb-4 px-3">
+              <p className="mb-1 flex items-center gap-2 px-2 text-xs font-medium text-ink-3">{t.tenant}</p>
+              {t.error && <p className="px-2 text-xs text-critical">{t.error}</p>}
+              {!t.error && t.templates.length === 0 && <p className="px-2 text-xs text-ink-3">No template.</p>}
+              <ul className="flex flex-col gap-0.5">
+                {t.templates.map((tpl) => {
+                  const active = selected?.tenant === t.tenant && selected.template.name === tpl.name;
+                  return (
+                    <li key={tpl.name}>
+                      <button
+                        type="button"
+                        aria-current={active || undefined}
+                        onClick={() => setSelected({ tenant: t.tenant, template: tpl })}
+                        className={cx(
+                          "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors duration-200",
+                          active ? "bg-active text-ink" : "text-ink-2 hover:bg-hover hover:text-ink",
+                        )}
+                      >
+                        <FileText aria-hidden className="size-4 shrink-0 opacity-70" />
+                        <span className="flex-1 truncate">{tpl.name}</span>
+                        <span className="flex gap-1">
+                          {tpl.locales.map((l) => (
+                            <Tag key={l}>{l}</Tag>
+                          ))}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ))}
+        </nav>
+        <div className="min-w-0 flex-1">
           {selected ? (
-            <PreviewPanel key={`${selected.tenant}/${selected.template.name}`} selected={selected} />
+            <Preview key={`${selected.tenant}/${selected.template.name}`} selected={selected} />
           ) : (
-            <EmptyState title="Pick a template">
-              Choose a template on the left to render it with sample data.
+            <EmptyState icon={FileText} title="Select a template">
+              Check its subject, HTML and text with your own data before an application sends it.
             </EmptyState>
           )}
         </div>
-      )}
-    </>
+      </div>
+    </Page>
   );
 }

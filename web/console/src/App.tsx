@@ -2,7 +2,7 @@ import { Route, Routes } from "react-router";
 
 import { useSession } from "./api/hooks";
 import { Layout } from "./components/Layout";
-import { ErrorNotice, Loading } from "./components/ui";
+import { ErrorNotice } from "./components/ui";
 import { Activity } from "./pages/Activity";
 import { DeadLetters } from "./pages/DeadLetters";
 import { Email } from "./pages/Email";
@@ -18,11 +18,7 @@ export function App() {
   const session = useSession();
 
   if (session.isPending) {
-    return (
-      <main className="grid min-h-dvh place-items-center">
-        <Loading label="Opening the console" />
-      </main>
-    );
+    return <main className="grid min-h-dvh place-items-center" role="status" aria-label="Opening the console" />;
   }
   if (session.error) {
     return (

@@ -42,22 +42,21 @@ export function ConfirmDialog({
         onCancel();
       }}
       aria-labelledby="confirm-title"
-      className="m-auto w-[min(28rem,calc(100vw-2rem))] rounded-l border border-line bg-card p-0 text-ink shadow-xl"
+      className="animate-pop m-auto w-[min(26rem,calc(100vw-2rem))] rounded-2xl border border-line-strong bg-overlay p-0 text-ink shadow-float"
     >
-      <div className="airmail h-1.5" aria-hidden />
-      <div className="p-6">
-        <h2 id="confirm-title" className="display text-xl font-bold">
+      <div className="p-5">
+        <h2 id="confirm-title" className="text-base font-medium">
           {title}
         </h2>
         <div className="mt-2 text-sm text-ink-2">{children}</div>
-        <div className="mt-6 flex justify-end gap-2">
-          <Button variant="ghost" onClick={onCancel} disabled={busy}>
-            Cancel
-          </Button>
-          <Button variant={danger ? "danger" : "primary"} onClick={onConfirm} busy={busy} autoFocus>
-            {confirmLabel}
-          </Button>
-        </div>
+      </div>
+      <div className="flex justify-end gap-2 border-t border-line px-5 py-3">
+        <Button variant="ghost" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Button>
+        <Button variant={danger ? "danger" : "primary"} onClick={onConfirm} busy={busy} autoFocus>
+          {confirmLabel}
+        </Button>
       </div>
     </dialog>
   );

@@ -22,6 +22,8 @@ import type {
   Routes,
   Session,
   State,
+  Stats,
+  StatsRange,
   Tenant,
   TenantTemplates,
 } from "./types";
@@ -99,6 +101,24 @@ export function useOverview() {
   return useQuery({
     queryKey: ["overview"],
     queryFn: () => api.get<Overview>("/overview"),
+    refetchInterval: LIVE_INTERVAL,
+  });
+}
+
+export function useStats(range: StatsRange) {
+  return useQuery({
+    queryKey: ["stats", range],
+    queryFn: () => api.get<Stats>("/stats", { range }),
+    refetchInterval: 10_000,
+    placeholderData: (previous) => previous,
+  });
+}
+
+/** The latest failures, for the dashboard. */
+export function useRecentFailures() {
+  return useQuery({
+    queryKey: ["activity", "failures"],
+    queryFn: () => api.get<ActivityPage>("/activity", { state: "failed", limit: 5 }),
     refetchInterval: LIVE_INTERVAL,
   });
 }

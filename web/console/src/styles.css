@@ -1,191 +1,214 @@
 @import "tailwindcss";
 
 /*
- * Kourrier console design system. Same direction as the landing page: a
- * sorting office. Paper and ink, the red and blue of airmail, and postmark
- * inks for statuses: the same state always has the same ink.
- *
- *   primitives  → raw values             (--p-*)
- *   semantic    → what a value is for    (--c-*, --r-*)
- *   components  → one component's knobs (--airmail, --code-*)
+ * Kourrier console: a calm, dense tool in the spirit of Linear, dark only.
+ * The content sits in a raised panel on a darker app background. Grays carry
+ * the hierarchy and the interactive elements; the only colors are statuses,
+ * always with an icon and a label, never color alone.
  */
 
-/* ========== 1. PRIMITIVES ========== */
+/* ========== Tokens (dark only) ==========
+ * Values measured on Linear's own interface: cool, soft grays rather than
+ * black, opaque hairline borders, and text that is never pure white. */
 :root {
-  --p-paper-50: #fbf9f4;
-  --p-paper-100: #f4f0e7;
-  --p-paper-200: #ebe5d8;
-  --p-paper-300: #ddd5c4;
-  --p-paper-400: #c9bfab;
+  /* Behind the app window: near black, with a gray glow at the bottom left. */
+  /* Measured top to bottom on Linear: near black, then a steady rise to gray. */
+  --backdrop: linear-gradient(180deg, #080909 0%, #0c0e0d 22%, #181a1a 47%, #222426 70%, #333436 94%, #343638 100%);
+  /* The app window, holding the sidebar. */
+  --app: #141516;
+  /* Lighter at the top, settled by a third of the height. */
+  --app-gradient: linear-gradient(180deg, #161718 0%, #151617 12%, #131415 32%, #131415 100%);
+  /* The content panel, inside the window. */
+  --panel: #191a1c;
+  /* Darker at the top, lighter at the bottom, with lit side edges. */
+  --panel-gradient:
+    linear-gradient(
+      90deg,
+      rgb(255 255 255 / 0.025) 0%,
+      rgb(255 255 255 / 0) 14%,
+      rgb(255 255 255 / 0) 86%,
+      rgb(255 255 255 / 0.018) 100%
+    ),
+    linear-gradient(180deg, #171819 0%, #171819 50%, #1a1a1b 85%, #1b1b1c 100%);
+  /* Cards inside the panel, and floating surfaces. */
+  --raised: #1b1b1d;
+  --overlay: #232526;
+  --hover: rgb(255 255 255 / 0.03);
+  --active: #1d1e20;
+  --border: #262729;
+  --border-strong: #313132;
+  --window-border: #232526;
 
-  --p-ink-900: #15130f;
-  --p-ink-700: #2e2a23;
-  --p-ink-600: #4a463f;
-  --p-ink-500: #625c52;
+  --text: #e7eaee;
+  --text-2: #c0c2c6;
+  --text-3: #8c919a;
+  --text-4: #787b84;
 
-  --p-red-600: #c0342a;
-  --p-red-100: #f6dcd6;
-  --p-blue-700: #1b4593;
-  --p-blue-600: #2456b3;
-  --p-blue-100: #dbe4f5;
-  --p-green-700: #2c6e47;
-  --p-green-100: #dcebdf;
-  --p-amber-700: #855609;
-  --p-amber-100: #f5e6c8;
+  --accent: #e7eaee;
+  --accent-hover: #ffffff;
+  --accent-soft: rgb(255 255 255 / 0.07);
+  --on-accent: #141516;
+  --focus: rgb(231 234 238 / 0.4);
 
-  --p-code-bg: #16140f;
-  --p-code-line: #2b2820;
-  --p-code-text: #e9e3d6;
-  --p-code-dim: #9a937f;
+  /* Status: the validated steps of the chart palette (dataviz skill). */
+  --good: #0ca30c;
+  --warning: #fab219;
+  --critical: #d03b3b;
+  --neutral: #8c919a;
+
+  /* Chart series, validated for color blindness on the card surface: sent
+     volume in a neutral gray, failures in the critical red. */
+  --series-sent: #8c919a;
+  --series-failed: #d03b3b;
+  --chart-grid: #262729;
+  --shadow: 0 16px 40px rgb(0 0 0 / 0.5), 0 0 0 1px var(--border-strong);
+  color-scheme: dark;
 }
 
-/* ========== 2. SEMANTIC ========== */
-:root {
-  --c-page: var(--p-paper-100);
-  --c-card: var(--p-paper-50);
-  --c-sunken: var(--p-paper-200);
-  --c-line: var(--p-paper-300);
-  --c-line-strong: var(--p-paper-400);
-
-  --c-ink: var(--p-ink-900);
-  --c-ink-2: var(--p-ink-600);
-  --c-ink-3: var(--p-ink-500);
-
-  --c-red: var(--p-red-600);
-  --c-red-soft: var(--p-red-100);
-  --c-blue: var(--p-blue-700);
-  --c-blue-soft: var(--p-blue-100);
-
-  /* Statuses, as postmarks. The *-soft fills never carry text. */
-  --c-sent: var(--p-green-700);
-  --c-sent-soft: var(--p-green-100);
-  --c-retrying: var(--p-amber-700);
-  --c-retrying-soft: var(--p-amber-100);
-  --c-failed: var(--p-red-600);
-  --c-failed-soft: var(--p-red-100);
-  --c-queued: var(--p-blue-700);
-  --c-queued-soft: var(--p-blue-100);
-
-  --c-focus: var(--p-blue-600);
-}
-
-/* ========== 3. COMPONENTS ========== */
-:root {
-  --code-bg: var(--p-code-bg);
-  --code-line: var(--p-code-line);
-  --code-text: var(--p-code-text);
-  --code-dim: var(--p-code-dim);
-
-  /* Airmail border: red, paper, blue, paper, at 45° */
-  --airmail: repeating-linear-gradient(
-    -45deg,
-    var(--p-red-600) 0 10px,
-    var(--p-paper-50) 10px 16px,
-    var(--p-blue-700) 16px 26px,
-    var(--p-paper-50) 26px 32px
-  );
-}
-
-/* ========== Tailwind ========== */
 @theme inline {
-  --color-page: var(--c-page);
-  --color-card: var(--c-card);
-  --color-sunken: var(--c-sunken);
-  --color-line: var(--c-line);
-  --color-line-strong: var(--c-line-strong);
-  --color-ink: var(--c-ink);
-  --color-ink-2: var(--c-ink-2);
-  --color-ink-3: var(--c-ink-3);
-  --color-red: var(--c-red);
-  --color-red-soft: var(--c-red-soft);
-  --color-blue: var(--c-blue);
-  --color-blue-soft: var(--c-blue-soft);
-  --color-sent: var(--c-sent);
-  --color-sent-soft: var(--c-sent-soft);
-  --color-retrying: var(--c-retrying);
-  --color-retrying-soft: var(--c-retrying-soft);
-  --color-failed: var(--c-failed);
-  --color-failed-soft: var(--c-failed-soft);
-  --color-queued: var(--c-queued);
-  --color-queued-soft: var(--c-queued-soft);
-  --color-code: var(--code-bg);
-  --color-code-line: var(--code-line);
-  --color-code-text: var(--code-text);
-  --color-code-dim: var(--code-dim);
+  --color-app: var(--app);
+  --color-backdrop: #080909;
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-overlay: var(--overlay);
+  --color-hover: var(--hover);
+  --color-active: var(--active);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-ink-2: var(--text-2);
+  --color-ink-3: var(--text-3);
+  --color-ink-4: var(--text-4);
+  --color-window-line: var(--window-border);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-on-accent: var(--on-accent);
+  --color-good: var(--good);
+  --color-warning: var(--warning);
+  --color-critical: var(--critical);
+  --color-neutral: var(--neutral);
+  --color-series-sent: var(--series-sent);
+  --color-series-failed: var(--series-failed);
 
-  --radius-s: 2px;
-  --radius-m: 6px;
-  --radius-l: 10px;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
 
-  --font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Bricolage Grotesque Variable", "Instrument Sans Variable", sans-serif;
-  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --shadow-float: var(--shadow);
 }
 
 /* ========== Base ========== */
-html {
-  color-scheme: light;
-  background: var(--c-page);
-}
-
+html,
 body {
-  background: var(--c-page);
-  color: var(--c-ink);
+  min-height: 100dvh;
+  background: var(--backdrop);
+  background-color: #080909;
+  background-attachment: fixed;
+  color: var(--text);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-::selection {
-  background: var(--c-ink);
-  color: var(--p-paper-50);
+/* In the base layer, and only the wrap style: utilities such as truncate
+   (white-space: nowrap) must still win. */
+@layer base {
+  h1,
+  h2,
+  h3 {
+    text-wrap-style: balance;
+  }
+  p {
+    text-wrap-style: pretty;
+  }
 }
 
-:focus-visible {
-  outline: 2px solid var(--c-focus);
-  outline-offset: 2px;
-  border-radius: 4px;
-}
-
-/* Display type: Bricolage at its optical size for headlines */
-.display {
-  font-family: var(--font-display);
-  font-variation-settings: "opsz" 72;
-  letter-spacing: -0.03em;
-}
-
-/* Condensed capitals, like the lettering of a rubber stamp */
-.stamp-type {
-  font-family: var(--font-display);
-  font-variation-settings:
-    "wdth" 75,
-    "opsz" 14;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+/* In the base layer, so that utilities such as outline-none win over them. */
+@layer base {
+  ::selection {
+    background: var(--accent-soft);
+  }
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  input[type="checkbox"] {
+    accent-color: var(--accent);
+  }
 }
 
 .tabular {
   font-variant-numeric: tabular-nums;
 }
 
-.airmail {
-  background: var(--airmail);
-}
-
-/* Code says what it says: no ligatures turning == into a symbol */
-.font-mono,
 code,
 pre,
-kbd {
+.font-mono {
   font-variant-ligatures: none;
-  font-feature-settings:
-    "liga" 0,
-    "calt" 0;
+}
+
+/* Thin scrollbars, as in a native app. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
 dialog::backdrop {
-  background: rgb(21 19 15 / 0.45);
+  background: rgb(0 0 0 / 0.5);
+}
+
+/* ========== Surfaces ========== */
+/* The app window and the content panel: soft vertical gradients, and a
+   lighter hairline on the top edge, as light catching the rim. */
+.surface-window {
+  background: var(--app-gradient);
+}
+.surface-panel {
+  background: var(--panel-gradient);
+}
+.surface-card {
+  background: var(--raised);
+}
+
+/* ========== Motion ========== */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 12px);
+  }
+}
+@keyframes pulse-soft {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.animate-rise {
+  animation: rise 300ms var(--ease-out-soft) both;
+}
+.animate-pop {
+  animation: pop 200ms var(--ease-out-soft) both;
+}
+.animate-slide-up {
+  animation: slide-up 300ms var(--ease-out-soft) both;
+}
+.skeleton {
+  background: var(--active);
+  border-radius: 6px;
+  animation: pulse-soft 1.6s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -193,6 +216,7 @@ dialog::backdrop {
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }

@@ -1,14 +1,60 @@
-import { RotateCcw, Trash2 } from "lucide-react";
+import { ArrowCounterClockwise, Trash, Tray } from "@phosphor-icons/react";
 import { useState } from "react";
 import { Link } from "react-router";
 
 import { useDeadLetterAction, useDeadLetters } from "../api/hooks";
+import type { DeadJob } from "../api/types";
+import { ActionBar } from "../components/ActionBar";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { Button, EmptyState, ErrorNotice, Loading, Mono, PageHeader, Tag, Time, table } from "../components/ui";
+import { Page } from "../components/Layout";
+import { Button, EmptyState, ErrorNotice, Label, ListSkeleton, StatusIcon, Tag, Time, cx } from "../components/ui";
+import { summarizeError } from "../lib/errors";
 import { plural, shortID } from "../lib/format";
 import { useSelection } from "../lib/selection";
 
 type Action = "replay" | "delete";
+
+function Row({ e, selected, onToggle }: { e: DeadJob; selected: boolean; onToggle: () => void }) {
+  return (
+    <li
+      className={cx(
+        "flex items-center gap-3 border-b border-line px-6 py-2.5 text-sm transition-colors duration-200",
+        selected ? "bg-accent-soft" : "hover:bg-hover",
+      )}
+    >
+      <input
+        type="checkbox"
+        aria-label={`Select ${e.template ?? "entry"} ${e.email_id ?? e.id}`}
+        checked={selected}
+        onChange={onToggle}
+      />
+      <StatusIcon state="failed" />
+      <span className="hidden w-28 shrink-0 font-mono text-xs text-ink-3 sm:block">
+        {e.email_id ? shortID(e.email_id) : "unreadable"}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate">
+          {e.email_id ? (
+            <Link to={`/emails/${e.email_id}`} className="font-medium hover:underline">
+              {e.template ?? "Inline content"}
+            </Link>
+          ) : (
+            <span className="font-medium">Unreadable job</span>
+          )}
+          {e.to && <span className="text-ink-3"> to {e.to.join(", ")}</span>}
+        </p>
+        <p className="truncate font-mono text-xs text-ink-3" title={e.reason}>
+          {e.reason}
+        </p>
+      </div>
+      <Tag tone="danger">{summarizeError(e.reason)}</Tag>
+      <span className="hidden shrink-0 items-center gap-3 md:flex">
+        {e.tenant && <Label dot={e.tenant}>{e.tenant}</Label>}
+        <span className="w-20 text-right text-xs text-ink-3">{e.failed_at ? <Time iso={e.failed_at} /> : ""}</span>
+      </span>
+    </li>
+  );
+}
 
 export function DeadLetters() {
   const query = useDeadLetters();
@@ -28,7 +74,7 @@ export function DeadLetters() {
     mutation.mutate(selection.ids, {
       onSuccess: ({ count }) => {
         setNotice(
-          action === "replay" ? `${plural(count, "job")} back in the queue.` : `${plural(count, "job")} deleted.`,
+          action === "replay" ? `${plural(count, "email")} queued again.` : `${plural(count, "entry")} deleted.`,
         );
         selection.clear();
       },
@@ -37,116 +83,74 @@ export function DeadLetters() {
   }
 
   return (
-    <>
-      <PageHeader
-        title="Dead letters"
-        description="E-mails that failed for good: a permanent error, or every attempt used. Replaying puts them back in the queue with a fresh attempt counter."
-        actions={
-          <>
-            <Button disabled={readable === 0} onClick={() => setConfirm("replay")}>
-              <RotateCcw aria-hidden className="size-4" />
-              Replay{selection.ids.length ? ` (${selection.ids.length})` : ""}
-            </Button>
-            <Button variant="danger" disabled={selection.ids.length === 0} onClick={() => setConfirm("delete")}>
-              <Trash2 aria-hidden className="size-4" />
-              Delete
-            </Button>
-          </>
-        }
-      />
-
-      <p role="status" aria-live="polite" className="mb-3 min-h-5 text-sm font-medium text-sent">
+    <Page
+      title="Dead letters"
+      description="Emails that failed for good. Fix the cause, then replay them."
+      padded={false}
+    >
+      <p role="status" aria-live="polite" className={cx("px-6 text-sm text-good", notice && "py-3")}>
         {notice}
       </p>
-      {mutation.error && <ErrorNotice error={mutation.error} />}
-      {query.isPending && <Loading />}
-      {query.error && <ErrorNotice error={query.error} />}
+      {mutation.error && (
+        <div className="px-6 pb-4">
+          <ErrorNotice error={mutation.error} />
+        </div>
+      )}
+      {query.isPending && <ListSkeleton rows={4} />}
+      {query.error && (
+        <div className="p-6">
+          <ErrorNotice error={query.error} />
+        </div>
+      )}
       {query.data && entries.length === 0 && (
-        <EmptyState title="The dead-letter queue is empty">No e-mail failed for good. Nothing to do.</EmptyState>
+        <EmptyState icon={Tray} title="No dead letters">
+          Every email was delivered or is still being retried.
+        </EmptyState>
       )}
 
       {entries.length > 0 && (
-        <div className={table.wrap}>
-          <table className={table.table}>
-            <thead>
-              <tr>
-                <th scope="col" className={`${table.th} w-10`}>
-                  <input
-                    type="checkbox"
-                    aria-label="Select every entry"
-                    checked={selection.allSelected}
-                    onChange={selection.toggleAll}
-                  />
-                </th>
-                <th scope="col" className={table.th}>
-                  Failed
-                </th>
-                <th scope="col" className={table.th}>
-                  E-mail
-                </th>
-                <th scope="col" className={table.th}>
-                  Tenant
-                </th>
-                <th scope="col" className={table.th}>
-                  Template
-                </th>
-                <th scope="col" className={table.th}>
-                  To
-                </th>
-                <th scope="col" className={table.th}>
-                  Attempts
-                </th>
-                <th scope="col" className={table.th}>
-                  Reason
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {entries.map((e) => (
-                <tr key={e.id} className={selection.selected.has(e.id) ? "bg-blue-soft/40" : "hover:bg-page/60"}>
-                  <td className={table.td}>
-                    <input
-                      type="checkbox"
-                      aria-label={`Select ${e.email_id ?? e.id}`}
-                      checked={selection.selected.has(e.id)}
-                      onChange={() => selection.toggle(e.id)}
-                    />
-                  </td>
-                  <td className={table.td}>{e.failed_at ? <Time iso={e.failed_at} /> : "?"}</td>
-                  <td className={table.td}>
-                    {e.email_id ? (
-                      <Link to={`/emails/${e.email_id}`} className="text-blue hover:underline">
-                        <Mono>{shortID(e.email_id)}</Mono>
-                      </Link>
-                    ) : (
-                      <Tag tone="red">unreadable</Tag>
-                    )}
-                  </td>
-                  <td className={table.td}>{e.tenant}</td>
-                  <td className={table.td}>{e.template ?? <span className="text-ink-3">inline</span>}</td>
-                  <td className={table.td}>
-                    <Mono className="text-ink-2">{e.to?.join(", ")}</Mono>
-                  </td>
-                  <td className={`${table.td} tabular`}>{e.attempts}</td>
-                  <td className={`${table.td} max-w-sm font-mono text-[13px] break-words text-failed`}>{e.reason}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="flex h-9 items-center gap-3 border-b border-line bg-raised px-6 text-xs font-medium">
+            <input
+              type="checkbox"
+              aria-label="Select every entry"
+              checked={selection.allSelected}
+              onChange={selection.toggleAll}
+            />
+            <StatusIcon state="failed" label={false} />
+            Failed for good
+            <span className="tabular text-ink-3">{entries.length}</span>
+          </div>
+          <ul>
+            {entries.map((e) => (
+              <Row key={e.id} e={e} selected={selection.selected.has(e.id)} onToggle={() => selection.toggle(e.id)} />
+            ))}
+          </ul>
+        </>
       )}
 
       {query.hasNextPage && (
-        <div className="mt-4 flex justify-center">
-          <Button onClick={() => void query.fetchNextPage()} busy={query.isFetchingNextPage}>
+        <div className="flex justify-center py-4">
+          <Button size="sm" variant="ghost" onClick={() => void query.fetchNextPage()} busy={query.isFetchingNextPage}>
             Load more
           </Button>
         </div>
       )}
 
+      <ActionBar count={selection.ids.length} onClear={selection.clear}>
+        <Button size="sm" disabled={readable === 0} onClick={() => setConfirm("replay")}>
+          <ArrowCounterClockwise aria-hidden className="size-4" />
+          Replay
+        </Button>
+        <Button size="sm" variant="danger" onClick={() => setConfirm("delete")}>
+          <Trash aria-hidden className="size-4" />
+          Delete
+        </Button>
+      </ActionBar>
+
       <ConfirmDialog
         open={confirm !== null}
-        title={confirm === "delete" ? "Delete these e-mails?" : "Replay these e-mails?"}
+        title={confirm === "delete" ? "Delete these entries?" : "Replay these emails?"}
         confirmLabel={confirm === "delete" ? "Delete" : "Replay"}
         danger={confirm === "delete"}
         busy={mutation.isPending}
@@ -154,15 +158,15 @@ export function DeadLetters() {
         onCancel={() => setConfirm(null)}
       >
         {confirm === "delete" ? (
-          <p>{plural(selection.ids.length, "entry")} will be removed for good. The e-mails will not be sent.</p>
+          <p>{plural(selection.ids.length, "entry")} will be removed for good. These emails will not be sent.</p>
         ) : (
           <p>
-            {plural(readable, "e-mail")} will be queued again and sent by the workers. Fix the cause first (template,
-            sender, provider), or they will fail again.
+            {plural(readable, "email")} will be queued again with a fresh attempt counter. Fix the cause first, or they
+            will fail again.
             {readable < selection.ids.length && " Unreadable entries are skipped."}
           </p>
         )}
       </ConfirmDialog>
-    </>
+    </Page>
   );
 }
