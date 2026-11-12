@@ -227,6 +227,40 @@ func TestEnqueueAtomic(t *testing.T) {
 	}
 }
 
+func TestEnqueueAtomicAppendsToStream(t *testing.T) {
+	mr, rdb := setup(t)
+	q := newTestQueue(t, "c1", rdb)
+	ctx := context.Background()
+	feed := func(id string) Write {
+		return Write{Key: "{kourrier}:feed", Fields: []string{"email", id, "state", "queued"}, MaxLen: 100}
+	}
+	guard := &Write{Key: "{kourrier}:idem:k", Value: []byte("record"), TTL: time.Hour}
+
+	if _, err := q.EnqueueAtomic(ctx, job("1"), guard, feed("1")); err != nil {
+		t.Fatal(err)
+	}
+	// A guarded no-op appends nothing either.
+	if _, err := q.EnqueueAtomic(ctx, job("2"), guard, feed("2")); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := mr.Stream("{kourrier}:feed")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("feed = %+v, %v", entries, err)
+	}
+	if got := entries[0].Values; len(got) != 4 || got[1] != "1" || got[3] != "queued" {
+		t.Fatalf("entry = %v", got)
+	}
+
+	for _, bad := range []Write{
+		{Key: "{kourrier}:feed", Fields: []string{"odd"}, MaxLen: 100},
+		{Key: "{kourrier}:feed", Fields: []string{"k", "v"}},
+	} {
+		if _, err := q.EnqueueAtomic(ctx, job("3"), nil, bad); err == nil {
+			t.Fatalf("invalid stream write %+v accepted", bad)
+		}
+	}
+}
+
 func TestEnqueueAtomicWaitsForReplicas(t *testing.T) {
 	_, rdb := setup(t)
 	q, err := NewRedisStreams(context.Background(), rdb, RedisConfig{

@@ -16,6 +16,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/theo-mrn/kourrier/internal/activity"
 	"github.com/theo-mrn/kourrier/internal/api"
 	"github.com/theo-mrn/kourrier/internal/config"
 	"github.com/theo-mrn/kourrier/internal/idempotency"
@@ -54,6 +55,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 		return err
 	}
 	statuses := status.NewStore(rdb, cfg.Redis.KeyPrefix, cfg.Status.TTL)
+	feed := NewActivity(cfg, rdb)
 
 	checks := map[string]api.Check{"redis": func(ctx context.Context) error { return rdb.Ping(ctx).Err() }}
 	var (
@@ -93,6 +95,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 			Idempotency: idempotency.NewStore(cfg.Redis.KeyPrefix, cfg.Idempotency.TTL),
 			Statuses:    statuses,
 			Templates:   renderer,
+			Activity:    feed,
 			Metrics:     metrics,
 			Logger:      logger,
 		})
@@ -137,6 +140,7 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 			Provider: mailer,
 			Limiter:  NewLimiter(cfg.RateLimit, rdb, cfg.Redis.KeyPrefix),
 			Statuses: statuses,
+			Activity: feed,
 			Metrics:  metrics,
 			Logger:   logger,
 		})
@@ -219,6 +223,15 @@ func Run(ctx context.Context, cfg *config.Config, version string, logger *slog.L
 	_ = adminServer.Shutdown(shutdownCtx)
 	logger.Info("kourrier stopped")
 	return runErr
+}
+
+// NewActivity returns the activity feed (ADR 016), or nil when it is
+// disabled.
+func NewActivity(cfg *config.Config, rdb redis.UniversalClient) *activity.Store {
+	if cfg.Activity.MaxLen <= 0 {
+		return nil
+	}
+	return activity.NewStore(rdb, cfg.Redis.KeyPrefix, cfg.Activity.MaxLen)
 }
 
 // NewRedis creates the Redis client, sized for the given number of workers.

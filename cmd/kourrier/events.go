@@ -118,6 +118,7 @@ func replayEvents(ctx context.Context, w io.Writer, cfg *config.Config, rdb redi
 			Queue:       q,
 			Idempotency: idempotency.NewStore(cfg.Redis.KeyPrefix, cfg.Idempotency.TTL),
 			Statuses:    status.NewStore(rdb, cfg.Redis.KeyPrefix, cfg.Status.TTL),
+			Activity:    app.NewActivity(cfg, rdb),
 			Metrics:     metrics, Logger: logger,
 		}),
 		DeadLetters: dead,

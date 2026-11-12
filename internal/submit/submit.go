@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/theo-mrn/kourrier/internal/activity"
 	"github.com/theo-mrn/kourrier/internal/id"
 	"github.com/theo-mrn/kourrier/internal/idempotency"
 	"github.com/theo-mrn/kourrier/internal/mail"
@@ -65,6 +66,7 @@ type Service struct {
 	idempotency *idempotency.Store
 	statuses    *status.Store
 	templates   TemplateChecker
+	activity    *activity.Store
 	metrics     *observability.Metrics
 	logger      *slog.Logger
 	now         func() time.Time
@@ -77,15 +79,18 @@ type Deps struct {
 	Statuses    *status.Store
 	// Templates enables the template check (ADR 011). Nil disables it.
 	Templates TemplateChecker
-	Metrics   *observability.Metrics
-	Logger    *slog.Logger
+	// Activity enables the "queued" entries of the activity feed (ADR 016).
+	// Nil disables them.
+	Activity *activity.Store
+	Metrics  *observability.Metrics
+	Logger   *slog.Logger
 }
 
 // New creates a Service.
 func New(d Deps) *Service {
 	return &Service{
 		queue: d.Queue, idempotency: d.Idempotency, statuses: d.Statuses, templates: d.Templates,
-		metrics: d.Metrics, logger: d.Logger, now: time.Now,
+		activity: d.Activity, metrics: d.Metrics, logger: d.Logger, now: time.Now,
 	}
 }
 
@@ -131,8 +136,8 @@ func (s *Service) Submit(ctx context.Context, r *Request) (Result, error) {
 
 	jobID := id.New()
 	now := s.now().UTC()
-	// The "queued" status, the idempotency record and the job are written in
-	// one atomic step: a record never exists without its job, and a retried
+	// The "queued" status, the idempotency record, the activity entry and the
+	// job are written in one atomic step: a record never exists without its job, and a retried
 	// request after a lost reply finds the record instead of duplicating the
 	// e-mail. Writing the status before the job is visible also guarantees
 	// that a fast worker's "sent" is never overwritten by "queued".
@@ -158,8 +163,16 @@ func (s *Service) Submit(ctx context.Context, r *Request) (Result, error) {
 		guard = &queue.Write{Key: key, Value: val, TTL: ttl}
 	}
 
+	writes := []queue.Write{{Key: stKey, Value: stVal, TTL: stTTL}}
+	if s.activity != nil {
+		key, fields, maxLen := s.activity.Prepare(activity.Entry{
+			EmailID: jobID, Tenant: t.ID, State: status.Queued, Template: templateName(req),
+			To: observability.MaskAddresses(req.To), Origin: string(r.Origin), At: now,
+		})
+		writes = append(writes, queue.Write{Key: key, Fields: fields, MaxLen: maxLen})
+	}
 	prev, err := s.queue.EnqueueAtomic(ctx, &queue.Job{ID: jobID, TenantID: t.ID, EnqueuedAt: now, Request: *req},
-		guard, queue.Write{Key: stKey, Value: stVal, TTL: stTTL})
+		guard, writes...)
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}

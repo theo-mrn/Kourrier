@@ -45,6 +45,7 @@ Toute la configuration passe par des variables d'environnement préfixées `KOUR
 | `KOURRIER_RATE_LIMIT_SCOPE` | `global` | `global` (partagé via Redis) ou `local` (par Pod). |
 | `KOURRIER_IDEMPOTENCY_TTL` | `24h` | Durée de mémorisation des `Idempotency-Key`. |
 | `KOURRIER_STATUS_TTL` | `168h` | Durée de conservation des statuts. |
+| `KOURRIER_ACTIVITY_MAX_LEN` | `10000` | Nombre approximatif d'entrées du fil d'activité (derniers changements de statut, destinataires masqués, [ADR 016](adr/0016-console-d-administration.md)). `0` le désactive. |
 
 ## Templates et stockage
 
