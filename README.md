@@ -1,5 +1,10 @@
 # Kourrier
 
+[![CI](https://github.com/theo-mrn/Kourrier/actions/workflows/ci.yml/badge.svg)](https://github.com/theo-mrn/Kourrier/actions/workflows/ci.yml)
+[![Go version](https://img.shields.io/github/go-mod/go-version/theo-mrn/Kourrier)](go.mod)
+[![Release](https://img.shields.io/github/v/release/theo-mrn/Kourrier)](https://github.com/theo-mrn/Kourrier/releases)
+[![License](https://img.shields.io/github/license/theo-mrn/Kourrier)](LICENSE)
+
 **La couche e-mail de votre plate-forme Kubernetes** : asynchrone, cloud-native, auto-hébergée et agnostique du fournisseur, écrite en Go.
 
 Vos services publient des **événements de domaine** (`user.signed_up`, `order.paid`) au format [CloudEvents](https://cloudevents.io). Kourrier les consomme et en déduit les e-mails à envoyer grâce à des **routes déclaratives** versionnées dans Git. Le code métier ne connaît plus l'e-mail ; ajouter une notification revient à ajouter une route. Pour les envois directs, l'API HTTP reste disponible.
@@ -177,3 +182,7 @@ internal/storage/      stockage des templates (s3store, fsstore)
 deploy/helm/kourrier/  Chart Helm et dashboard Grafana
 docs/                  architecture, ADRs, API, configuration, exploitation
 ```
+
+## Licence
+
+[Apache 2.0](LICENSE).
