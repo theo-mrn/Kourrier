@@ -39,6 +39,7 @@ routes:
 - **Idempotent** : l'en-tête `Idempotency-Key` côté API et la clé `route + source + id` côté événements évitent les doublons lors des renvois et redélivrances.
 - **Rate limiting distribué** (GCRA sur Redis) : le quota SES est respecté quel que soit le nombre de replicas.
 - **Observabilité native** : métriques Prometheus, logs JSON (adresses masquées), dashboard Grafana et alertes livrés dans le Chart Helm.
+- **Console d'administration** (optionnelle) : interface web embarquée dans le binaire pour suivre les e-mails, rejouer ou purger les files en échec et prévisualiser les templates, derrière un jeton administrateur. Voir [docs/console.md](docs/console.md).
 - **Léger** : un binaire statique (environ 40 Mo), image distroless non-root d'environ 53 Mo.
 
 ## Tester en local
@@ -153,6 +154,7 @@ Toutes les options sont décrites dans [values.yaml](deploy/helm/kourrier/values
 - [API](docs/api.md)
 - [Configuration](docs/configuration.md)
 - [Exploitation (DLQ, rotation des clés, alertes)](docs/operations.md)
+- [Console d'administration](docs/console.md)
 
 ## Développement
 
@@ -160,6 +162,7 @@ Toutes les options sont décrites dans [values.yaml](deploy/helm/kourrier/values
 make test        # tests avec le détecteur de race (Redis simulé par miniredis)
 make lint        # go vet et golangci-lint
 make vuln        # vulnérabilités connues (govulncheck)
+make console-check  # console web : format, lint, types, tests
 make build       # bin/kourrier
 make helm-lint   # lint et rendu du chart
 make help        # toutes les cibles

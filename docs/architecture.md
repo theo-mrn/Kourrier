@@ -16,6 +16,7 @@ flowchart LR
         submit["submit<br/>validation · template · idempotence"]
         workers["Pool de workers<br/>rendu · rate limit · retries"]
         admin["Admin :9090<br/>/metrics · /livez · /readyz"]
+        console["Console :8081 (optionnelle)<br/>SPA · API d'administration"]
     end
 
     redis[("Redis ≥ 7<br/>stream · delayed · dead<br/>idempotence · statuts · rate limit")]
@@ -35,6 +36,7 @@ flowchart LR
     submit -. "template existe ? (cache)" .-> s3
     workers -- "Send" --> provider
     admin -. scrape .-> obs
+    console -. "lecture · rejeu" .-> redis
     pod -. "logs JSON (stdout)" .-> obs
 ```
 
@@ -77,6 +79,8 @@ sequenceDiagram
 | `internal/app` | Racine de composition : construit les composants depuis la configuration, gère le cycle de vie et l'arrêt propre. |
 | `internal/config` | Configuration par variables d'environnement `KOURRIER_*`. |
 | `internal/api` | API HTTP publique (`/v1/emails`, sink `/v1/events`) et serveur d'administration. |
+| `internal/console` | Console d'administration web : API JSON, sessions signées et SPA embarquée ([ADR 016](adr/0016-console-d-administration.md)). Le front est dans `web/console`. |
+| `internal/activity` | Fil plafonné des derniers changements de statut, lu par la console. |
 | `internal/submit` | Service de soumission partagé par toutes les entrées : validation, expéditeur, idempotence, statut, mise en file. |
 | `internal/cloudevent` | Parseur CloudEvents 1.0 strict et borné ([ADR 012](adr/0012-entree-evenementielle-cloudevents.md)). |
 | `internal/routing` | Fichier de routes et expressions CEL compilées ([ADR 013](adr/0013-routage-declaratif-cel.md)). |
