@@ -154,6 +154,7 @@ Toutes les options sont décrites dans [values.yaml](deploy/helm/kourrier/values
 ```sh
 make test        # tests avec le détecteur de race (Redis simulé par miniredis)
 make lint        # go vet et golangci-lint
+make vuln        # vulnérabilités connues (govulncheck)
 make build       # bin/kourrier
 make helm-lint   # lint et rendu du chart
 make help        # toutes les cibles

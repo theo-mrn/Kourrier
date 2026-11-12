@@ -1,6 +1,6 @@
 module github.com/theo-mrn/kourrier
 
-go 1.26.2
+go 1.26.11
 
 require (
 	cel.dev/cel-go v0.33.1
